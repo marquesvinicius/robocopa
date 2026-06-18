@@ -1,0 +1,37 @@
+# Liga o Web Service robocopa no Render — 10:00 (horário de Brasília)
+# 10:00 BRT = 13:00 UTC (Brasil não usa horário de verão desde 2019)
+name: Render — Ligar Robocopa
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: render-schedule
+  cancel-in-progress: false
+
+jobs:
+  resume:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validar secrets
+        run: |
+          if [ -z "${{ secrets.RENDER_API_KEY }}" ] || [ -z "${{ secrets.RENDER_SERVICE_ID }}" ]; then
+            echo "::error::Configure os secrets RENDER_API_KEY e RENDER_SERVICE_ID no repositório GitHub."
+            exit 1
+          fi
+
+      - name: Resume serviço robocopa
+        run: |
+          echo "Ligando serviço ${{ secrets.RENDER_SERVICE_ID }} (10:00 BRT)..."
+          http_code=$(curl -sS -o /tmp/render-resume.json -w "%{http_code}" -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/resume" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Accept: application/json")
+          echo "HTTP $http_code"
+          cat /tmp/render-resume.json
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            exit 1
+          fi

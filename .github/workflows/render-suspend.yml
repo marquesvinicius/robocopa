@@ -1,0 +1,37 @@
+# Desliga o Web Service robocopa no Render — 03:01 (horário de Brasília)
+# 03:01 BRT = 06:01 UTC
+name: Render — Desligar Robocopa
+
+on:
+  schedule:
+    - cron: "1 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: render-schedule
+  cancel-in-progress: false
+
+jobs:
+  suspend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Validar secrets
+        run: |
+          if [ -z "${{ secrets.RENDER_API_KEY }}" ] || [ -z "${{ secrets.RENDER_SERVICE_ID }}" ]; then
+            echo "::error::Configure os secrets RENDER_API_KEY e RENDER_SERVICE_ID no repositório GitHub."
+            exit 1
+          fi
+
+      - name: Suspend serviço robocopa
+        run: |
+          echo "Desligando serviço ${{ secrets.RENDER_SERVICE_ID }} (03:01 BRT)..."
+          http_code=$(curl -sS -o /tmp/render-suspend.json -w "%{http_code}" -X POST \
+            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/suspend" \
+            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
+            -H "Accept: application/json")
+          echo "HTTP $http_code"
+          cat /tmp/render-suspend.json
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            exit 1
+          fi
