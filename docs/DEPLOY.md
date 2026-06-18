@@ -70,7 +70,7 @@ Economia: ~510 h/mês em vez de ~744 h (24/7).
 | **Automático** | Todo dia **10:00** liga · **03:01** desliga (BRT) | Não — o `cron` do GitHub Actions cuida disso |
 | **Manual** (Run workflow) | Quando **você** clicar em Actions → Run workflow | Só para **testar** ou ligar/desligar **fora** do horário |
 
-O passo “Testar agora” é **uma vez**, para confirmar que os secrets e a API do Render estão certos. Depois disso, ignore — o bot liga às 10h e desliga às 03:01 sem intervenção.
+O passo “Testar agora” é **uma vez**, para confirmar que os secrets e a API do Render estão certos. O workflow **Ligar** agora também espera até `https://robocopa.onrender.com/health` responder `Robocopa OK` (até ~5 min de cold start no free tier) — o run só fica verde quando o bot estiver de fato no ar.
 
 **Exceção:** se você fizer deploy ou quiser usar o bot entre **03:01 e 09:59**, aí sim pode rodar **Render — Ligar Robocopa** manualmente (ou esperar até as 10h).
 
