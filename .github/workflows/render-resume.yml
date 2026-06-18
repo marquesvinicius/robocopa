@@ -15,6 +15,8 @@ jobs:
   resume:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      HEALTH_URL: https://robocopa.onrender.com/health
     steps:
       - name: Validar secrets
         run: |
@@ -35,3 +37,27 @@ jobs:
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             exit 1
           fi
+
+      - name: Aguardar /health (Robocopa OK)
+        run: |
+          echo "Aguardando cold start do Render free tier em $HEALTH_URL ..."
+          max_attempts=20
+          sleep_secs=15
+          for i in $(seq 1 "$max_attempts"); do
+            echo "--- Tentativa $i/$max_attempts ---"
+            body=$(curl -sS --max-time 45 "$HEALTH_URL" 2>/dev/null || true)
+            if echo "$body" | grep -q "Robocopa OK"; then
+              echo "Serviço no ar: $body"
+              exit 0
+            fi
+            if echo "$body" | grep -qi "suspended"; then
+              echo "Ainda suspenso, aguardando resume propagar..."
+            elif [ -n "$body" ]; then
+              echo "Resposta (parcial): $(echo "$body" | tr -d '\n' | head -c 120)"
+            else
+              echo "Sem resposta ainda (waking up ou rede)..."
+            fi
+            sleep "$sleep_secs"
+          done
+          echo "::error::/health não retornou 'Robocopa OK' após $((max_attempts * sleep_secs))s"
+          exit 1
