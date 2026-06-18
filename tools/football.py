@@ -62,6 +62,10 @@ _OPENFOOTBALL_URL = (
 # Último erro retornado pela API (para diagnóstico e mensagens ao usuário)
 _last_api_error: str | None = None
 
+# Detectado após primeiro erro "Free plans do not have access to this season"
+# Evita bater na API-Football com temporada 2026 repetidamente
+_api_football_2026_blocked: bool = False
+
 # Nomes alternativos / apelidos de seleções → nome oficial
 _ALIASES: dict[str, str] = {
     "brasil":    "Brazil",
@@ -112,6 +116,16 @@ _ALIASES: dict[str, str] = {
     "egypt":     "Egypt",
     "australia": "Australia",
     "austrália": "Australia",
+    "noruega":   "Norway",
+    "norway":    "Norway",
+    "frança":    "France",
+    "suica":     "Switzerland",
+    "suíça":     "Switzerland",
+    "croacia":   "Croatia",
+    "dinamarca": "Denmark",
+    "suecia":    "Sweden",
+    "polonia":   "Poland",
+    "polônia":   "Poland",
 }
 
 # Tradução de nomes em inglês (como vêm das APIs) para português (exibição ao usuário)
@@ -342,7 +356,10 @@ def _api_get(endpoint: str, params: dict) -> dict | None:
         data = resp.json()
         # A API retorna erros na chave "errors"
         if data.get("errors"):
+            global _api_football_2026_blocked
             _last_api_error = str(data["errors"])
+            if "Free plans" in _last_api_error:
+                _api_football_2026_blocked = True
             if os.getenv("DEBUG", "false").lower() == "true":
                 print(f"[API-Football] {endpoint} {params}: {data['errors']}")
             return None
@@ -449,6 +466,8 @@ def api_football_startup_status() -> str:
         return "OK (temporada 2026 completa)"
 
     if _last_api_error and "Free plans" in _last_api_error:
+        global _api_football_2026_blocked
+        _api_football_2026_blocked = True
         return "chave OK — plano Free (Copa 2026 parcial; upgrade para dados completos)"
 
     if _last_api_error:
@@ -644,6 +663,10 @@ def _openfootball_classificacao(grupo: str | None) -> str:
 
 _FDORG_BASE = "https://api.football-data.org/v4"
 _FDORG_COMP = "WC"  # Copa do Mundo 2026
+_FDORG_TEAMS_TTL = 3600   # elenco muda raramente
+_FDORG_MATCHES_TTL = 300  # placares/última partida mudam com mais frequência
+_FDORG_CACHE_TEAMS = f"fdorg_{_FDORG_COMP}_teams"
+_FDORG_CACHE_MATCHES = f"fdorg_{_FDORG_COMP}_matches_all"
 
 
 def _has_fdorg_key() -> bool:
@@ -668,6 +691,36 @@ def _fdorg_get(path: str, params: dict | None = None) -> dict | None:
         return resp.json()
     except Exception:
         return None
+
+
+def _fdorg_competition_teams() -> list[dict] | None:
+    """Lista de seleções da Copa 2026 — cache compartilhado (elenco, escalacao, etc.)."""
+    cached = _cache_get(_FDORG_CACHE_TEAMS, _FDORG_TEAMS_TTL)
+    if cached is not None:
+        return cached
+
+    data = _fdorg_get(f"competitions/{_FDORG_COMP}/teams")
+    if not data or "teams" not in data:
+        return None
+
+    teams = data["teams"]
+    _cache_set(_FDORG_CACHE_TEAMS, teams)
+    return teams
+
+
+def _fdorg_competition_matches() -> list[dict] | None:
+    """Todas as partidas da Copa 2026 — cache compartilhado."""
+    cached = _cache_get(_FDORG_CACHE_MATCHES, _FDORG_MATCHES_TTL)
+    if cached is not None:
+        return cached
+
+    data = _fdorg_get(f"competitions/{_FDORG_COMP}/matches")
+    if not data or "matches" not in data:
+        return None
+
+    matches = data["matches"]
+    _cache_set(_FDORG_CACHE_MATCHES, matches)
+    return matches
 
 
 def _fdorg_match_line(m: dict, detailed: bool = False) -> str:
@@ -700,22 +753,24 @@ def _fdorg_proximos(team_name: str | None, limite: int) -> list[dict]:
     if cached is not None:
         return cached
 
-    now = datetime.now(tz=timezone.utc)
-    params = {
-        "status": "SCHEDULED",
-        "dateFrom": now.strftime("%Y-%m-%d"),
-        "dateTo": (now + timedelta(days=14)).strftime("%Y-%m-%d"),
-    }
-    data = _fdorg_get(f"competitions/{_FDORG_COMP}/matches", params)
-    if not data or "matches" not in data:
+    all_matches = _fdorg_competition_matches()
+    if all_matches is None:
         return []
 
-    matches = data["matches"]
+    now = datetime.now(tz=timezone.utc)
+    cutoff = (now + timedelta(days=14)).isoformat()
+    now_iso = now.isoformat()
+    matches = [
+        m for m in all_matches
+        if m.get("status") in ("SCHEDULED", "TIMED")
+        and now_iso <= m.get("utcDate", "") <= cutoff
+    ]
     if team_name:
+        t = team_name.lower()
         matches = [
             m for m in matches
-            if team_name.lower() in m.get("homeTeam", {}).get("name", "").lower()
-            or team_name.lower() in m.get("awayTeam", {}).get("name", "").lower()
+            if t in m.get("homeTeam", {}).get("name", "").lower()
+            or t in m.get("awayTeam", {}).get("name", "").lower()
         ]
     result = matches[:limite]
     _cache_set(cache_key, result)
@@ -728,20 +783,19 @@ def _fdorg_resultado(team_name: str | None, date_filter: str | None) -> list[dic
     if cached is not None:
         return cached
 
-    params: dict = {"status": "FINISHED"}
-    if date_filter:
-        params["dateFrom"] = date_filter
-        params["dateTo"] = date_filter
-    data = _fdorg_get(f"competitions/{_FDORG_COMP}/matches", params)
-    if not data or "matches" not in data:
+    all_matches = _fdorg_competition_matches()
+    if all_matches is None:
         return []
 
-    matches = data["matches"]
+    matches = [m for m in all_matches if m.get("status") in ("FINISHED", "AWARDED")]
+    if date_filter:
+        matches = [m for m in matches if m.get("utcDate", "").startswith(date_filter)]
     if team_name:
+        t = team_name.lower()
         matches = [
             m for m in matches
-            if team_name.lower() in m.get("homeTeam", {}).get("name", "").lower()
-            or team_name.lower() in m.get("awayTeam", {}).get("name", "").lower()
+            if t in m.get("homeTeam", {}).get("name", "").lower()
+            or t in m.get("awayTeam", {}).get("name", "").lower()
         ]
     result = matches[-5:]
     _cache_set(cache_key, result)
@@ -753,14 +807,18 @@ def _fdorg_ao_vivo() -> list[dict]:
     if cached is not None:
         return cached
 
+    all_matches = _fdorg_competition_matches()
+    if all_matches is not None:
+        result = [m for m in all_matches if m.get("status") in ("IN_PLAY", "PAUSED")]
+        _cache_set("fdorg_live", result)
+        return result
+
+    # Fallback direto só se o cache compartilhado não retornou nada
     result = []
     for status in ("IN_PLAY", "PAUSED"):
-        data = _fdorg_get(
-            f"competitions/{_FDORG_COMP}/matches", {"status": status}
-        )
+        data = _fdorg_get(f"competitions/{_FDORG_COMP}/matches", {"status": status})
         if data and "matches" in data:
             result.extend(data["matches"])
-
     _cache_set("fdorg_live", result)
     return result
 
@@ -861,19 +919,20 @@ def proximos_jogos(time: str | None = None, limite: int = 5) -> str:
     if cached:
         return cached
 
-    # Tenta API-Football
-    params: dict = {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-        "next": limite,
-        "status": "NS",  # Not Started
-    }
-    if team_api:
-        params["team"] = _resolve_team_id(team_api)
-        if not params["team"]:
-            params.pop("team")
-
-    data = _api_get("fixtures", params)
+    # Tenta API-Football (pula se plano Free já bloqueou temporada 2026)
+    data = None
+    if not _api_football_2026_blocked:
+        params: dict = {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+            "next": limite,
+            "status": "NS",  # Not Started
+        }
+        if team_api:
+            params["team"] = _resolve_team_id(team_api)
+            if not params["team"]:
+                params.pop("team")
+        data = _api_get("fixtures", params)
     if data and data.get("response"):
         fixtures = data["response"]
         if not fixtures:
@@ -1061,11 +1120,19 @@ def escalacao(jogo: str) -> str:
 
     # Descobre o fixture_id do último jogo da equipe
     team_api = _normalize_team(jogo) if jogo.lower() != "ultima" else "Brazil"
+    fdorg_team = _find_fdorg_team(team_api)
+    if fdorg_team:
+        team_api = fdorg_team.get("name", team_api)
+
     tid = _resolve_team_id(team_api)
     if not tid:
+        if fdorg_team:
+            team_pt = _team_pt(fdorg_team.get("name", team_api))
+            last = _fdorg_last_finished_match(fdorg_team)
+            return _escalacao_indisponivel(jogo, team_pt, last)
         return (
             "Não consegui identificar a seleção. "
-            "Tente: 'Brasil', 'Argentina', 'França', etc."
+            "Tente: 'Brasil', 'Argentina', 'França', 'Noruega', etc."
         )
 
     data = _api_get("fixtures", {
@@ -1075,6 +1142,10 @@ def escalacao(jogo: str) -> str:
         "last": 1,
     })
     if not data or not data.get("response"):
+        team_pt = _team_pt(team_api)
+        last = _fdorg_last_finished_match(fdorg_team) if fdorg_team else None
+        if last or (_last_api_error and "season" in str(_last_api_error).lower()):
+            return _escalacao_indisponivel(jogo, team_pt, last)
         return (
             "Não encontrei partidas recentes para buscar escalação. "
             "Use web_search para buscar a escalação na Copa 2026."
@@ -1117,6 +1188,131 @@ def escalacao(jogo: str) -> str:
     return result
 
 
+def _find_fdorg_team(time: str) -> dict | None:
+    """Busca uma seleção na lista football-data.org da Copa 2026."""
+    team_api = _normalize_team(time)
+    teams = _fdorg_competition_teams()
+    if not teams:
+        return None
+
+    target = team_api.lower()
+    for t in teams:
+        for n in (t.get("name", ""), t.get("shortName", ""), t.get("tla", "")):
+            if n.lower() == target or target in n.lower():
+                return t
+
+    time_lower = time.lower().strip()
+    for t in teams:
+        pt = _team_pt(t.get("name", "")).lower()
+        if time_lower == pt or time_lower in pt or pt in time_lower:
+            return t
+    return None
+
+
+def _fdorg_last_finished_match(team: dict) -> dict | None:
+    """Última partida encerrada da seleção na Copa 2026 (football-data.org)."""
+    tname = team.get("name", "")
+    matches = _fdorg_competition_matches()
+    if not matches:
+        return None
+
+    finished = [
+        m for m in matches
+        if tname in (
+            m.get("homeTeam", {}).get("name"),
+            m.get("awayTeam", {}).get("name"),
+        )
+        and m.get("status") == "FINISHED"
+    ]
+    if not finished:
+        return None
+    return sorted(finished, key=lambda m: m.get("utcDate", ""), reverse=True)[0]
+
+
+def _escalacao_indisponivel(time: str, team_pt: str, match: dict | None = None) -> str:
+    """Mensagem quando a escalação titular não está nas fontes estruturadas."""
+    lines = [
+        f"Escalação titular de *{team_pt}* não disponível nas fontes estruturadas "
+        "(limite do plano gratuito da API-Football para a temporada 2026).",
+    ]
+    if match:
+        home = _team_pt(match["homeTeam"]["name"])
+        away = _team_pt(match["awayTeam"]["name"])
+        score = match.get("score", {}).get("fullTime", {})
+        sh, sa = score.get("home"), score.get("away")
+        placar = f"{sh} x {sa}" if sh is not None and sa is not None else "—"
+        date = match.get("utcDate", "")[:10]
+        lines.append(
+            f"\nÚltima partida na Copa: *{home}* {placar} *{away}* ({date})."
+        )
+    lines.append(
+        "\n*Alternativas:*\n"
+        f"- Pergunte em texto livre (ex.: escalação titular da {team_pt}) para eu buscar na web\n"
+        f"- /elenco {time} — elenco convocado (26 jogadores)\n"
+        "- Escalação oficial de partida costuma sair ~1h antes do jogo"
+    )
+    return "\n".join(lines)
+
+
+def elenco(time: str) -> str:
+    """
+    Retorna o elenco convocado de uma seleção para a Copa 2026.
+    Fonte: football-data.org /v4/competitions/WC/teams
+    """
+    team_api = _normalize_team(time)
+    cache_key = f"elenco_{team_api.lower()}"
+    cached = _cache_get(cache_key, 3600)
+    if cached:
+        return cached
+
+    found = _find_fdorg_team(time)
+    if not found:
+        return (
+            f"Não encontrei '{time}' entre os participantes da Copa 2026. "
+            "Tente: 'Brasil', 'Argentina', 'França', 'Noruega', etc."
+        )
+
+    squad = found.get("squad", [])
+    team_name = _team_pt(found.get("name", time))
+
+    if not squad:
+        return f"Elenco de {team_name} ainda não publicado.\n_(fonte: football-data.org)_"
+
+    coach_info = found.get("coach") or {}
+    coach_name = coach_info.get("name", "")
+
+    pos_order = ["Goalkeeper", "Defence", "Midfield", "Offence"]
+    pos_label = {
+        "Goalkeeper": "Goleiros",
+        "Defence": "Defensores",
+        "Midfield": "Meias",
+        "Offence": "Atacantes",
+    }
+    groups: dict[str, list[str]] = {p: [] for p in pos_order}
+    for p in squad:
+        pos = p.get("position", "Offence")
+        if pos not in groups:
+            pos = "Offence"
+        num = p.get("shirtNumber")
+        name = p.get("name", "?")
+        entry = f"  {'#'+str(num):<4} {name}" if num else f"  {name}"
+        groups[pos].append(entry)
+
+    lines = [f"**Elenco — {team_name} (Copa 2026)**"]
+    if coach_name:
+        lines.append(f"Técnico: {coach_name}\n")
+    for pos in pos_order:
+        if groups[pos]:
+            lines.append(f"**{pos_label[pos]}**")
+            lines.extend(groups[pos])
+            lines.append("")
+
+    lines.append("_(fonte: football-data.org)_")
+    result = "\n".join(lines)
+    _cache_set(cache_key, result)
+    return result
+
+
 def classificacao(grupo: str | None = None) -> str:
     """
     Retorna a classificação da fase de grupos da Copa 2026.
@@ -1132,10 +1328,12 @@ def classificacao(grupo: str | None = None) -> str:
     if cached:
         return cached
 
-    data = _api_get("standings", {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-    })
+    data = None
+    if not _api_football_2026_blocked:
+        data = _api_get("standings", {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+        })
 
     if data and data.get("response"):
         league_data = data["response"][0].get("league", {})
@@ -1209,15 +1407,16 @@ def jogos_ao_vivo() -> str:
         return cached
 
     fixtures: list[dict] | None = None
-    data = _api_get("fixtures", {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-        "live": "all",
-    })
+    if not _api_football_2026_blocked:
+        data = _api_get("fixtures", {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+            "live": "all",
+        })
+        if data is not None and "response" in data:
+            fixtures = data["response"]
 
-    if data is not None and "response" in data:
-        fixtures = data["response"]
-    elif _has_api_football_key():
+    if fixtures is None and _has_api_football_key():
         # Plano Free: season=2026 bloqueada — busca todos ao vivo e filtra Copa
         live_data = _api_get("fixtures", {"live": "all"})
         if live_data is not None and "response" in live_data:
@@ -1292,10 +1491,12 @@ def artilheiros(limite: int = 10) -> str:
     if cached:
         return cached
 
-    data = _api_get("players/topscorers", {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-    })
+    data = None
+    if not _api_football_2026_blocked:
+        data = _api_get("players/topscorers", {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+        })
 
     if data and data.get("response"):
         players = data["response"][:limite]
@@ -1563,25 +1764,31 @@ _TEAM_IDS: dict[str, int] = {
 
 def _resolve_team_id(team_name: str) -> int | None:
     """Resolve o ID de uma seleção na API-Football."""
-    # Tenta correspondência direta
     if team_name in _TEAM_IDS:
         return _TEAM_IDS[team_name]
 
-    # Tenta correspondência case-insensitive
     for name, tid in _TEAM_IDS.items():
         if name.lower() == team_name.lower():
             return tid
 
-    # Tenta busca dinâmica na API (consome 1 req)
+    # Cache de buscas dinâmicas — inclusive resultados negativos (sentinel "__none__")
+    cache_key = f"team_id_{team_name.lower()}"
+    cached = _cache_get(cache_key, 3600)
+    if cached is not None:
+        return None if cached == "__none__" else int(cached)
+
     data = _api_get("teams", {
         "league": _LEAGUE_ID,
         "season": _SEASON,
         "search": team_name,
     })
     if data and data.get("response"):
-        team_data = data["response"][0].get("team", {})
-        return team_data.get("id")
+        tid = data["response"][0].get("team", {}).get("id")
+        if tid:
+            _cache_set(cache_key, tid)
+            return tid
 
+    _cache_set(cache_key, "__none__")
     return None
 
 
@@ -1615,17 +1822,22 @@ def jogos_hoje() -> str:
         _cache_set(cache_key, result)
         return result
 
-    # football-data.org
+    # football-data.org — filtra do cache compartilhado (evita req extra)
     if _has_fdorg_key():
-        fd_data = _fdorg_get(
-            f"competitions/{_FDORG_COMP}/matches",
-            {"dateFrom": today_str, "dateTo": today_str},
-        )
-        if fd_data and fd_data.get("matches"):
-            lines = [_fdorg_match_line(m, detailed=True) for m in fd_data["matches"]]
-            result = header + "\n\n".join(lines) + "\n_(fonte: football-data.org)_"
-            _cache_set(cache_key, result)
-            return result
+        all_matches = _fdorg_competition_matches()
+        if all_matches:
+            today_matches = [
+                m for m in all_matches
+                if m.get("utcDate", "").startswith(today_str)
+                or datetime.fromisoformat(
+                    m.get("utcDate", "1970-01-01T00:00:00+00:00")
+                ).astimezone(_BR_TZ).date().isoformat() == today_str
+            ]
+            if today_matches:
+                lines = [_fdorg_match_line(m, detailed=True) for m in today_matches]
+                result = header + "\n\n".join(lines) + "\n_(fonte: football-data.org)_"
+                _cache_set(cache_key, result)
+                return result
 
     # openfootball — filtra por data exata
     of_data = _load_openfootball()
@@ -1670,6 +1882,7 @@ def dados_copa(intencao: str, time: str = "", grupo: str = "") -> str:
             "proximos_jogos"  — próximos jogos (geral ou de uma seleção)
             "resultado"       — placar de jogo recente
             "escalacao"       — escalação de uma partida
+            "elenco"          — elenco convocado de uma seleção (26 jogadores)
             "classificacao"   — tabela da fase de grupos
             "ao_vivo"         — jogos acontecendo agora
             "artilheiros"     — tabela de artilheiros e assistências
@@ -1698,6 +1911,11 @@ def dados_copa(intencao: str, time: str = "", grupo: str = "") -> str:
         if not time:
             return "Especifique a seleção para buscar a escalação."
         return escalacao(time)
+
+    elif intencao in ("elenco", "convocados", "squad", "convocacao", "convocação", "elenco_time"):
+        if not time:
+            return "Especifique uma seleção. Exemplo: 'elenco Brasil'."
+        return elenco(time)
 
     elif intencao in ("classificacao", "tabela", "grupo", "classificação"):
         return classificacao(grupo or None)
@@ -1737,6 +1955,6 @@ def dados_copa(intencao: str, time: str = "", grupo: str = "") -> str:
     else:
         return (
             f"Intenção '{intencao}' não reconhecida. "
-            "Valores válidos: proximos_jogos, resultado, escalacao, classificacao, "
+            "Valores válidos: proximos_jogos, resultado, escalacao, elenco, classificacao, "
             "ao_vivo, artilheiros, mata_mata, h2h."
         )

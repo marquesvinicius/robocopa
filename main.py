@@ -66,6 +66,8 @@ from tools.football import (
     jogos_hoje,
     artilheiros,
     mata_mata,
+    elenco,
+    escalacao,
     api_football_startup_status,
 )
 
@@ -203,17 +205,17 @@ async def _send_long(update: Update, text: str) -> None:
                 await asyncio.sleep(0.3)
 
 
-async def _reply_with_nav(update: Update, text: str) -> None:
+async def _reply_with_nav(update: Update, text: str, parse_mode: str | None = None) -> None:
     """Envia resposta com botões de navegação na última mensagem."""
     keyboard = _nav_keyboard()
     if len(text) <= 4096:
-        await update.message.reply_text(text, reply_markup=keyboard)
+        await update.message.reply_text(text, reply_markup=keyboard, parse_mode=parse_mode)
     else:
         chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
         for chunk in chunks[:-1]:
-            await update.message.reply_text(chunk)
+            await update.message.reply_text(chunk, parse_mode=parse_mode)
             await asyncio.sleep(0.3)
-        await update.message.reply_text(chunks[-1], reply_markup=keyboard)
+        await update.message.reply_text(chunks[-1], reply_markup=keyboard, parse_mode=parse_mode)
 
 
 async def _send_nav(bot, chat_id: int, text: str) -> None:
@@ -244,6 +246,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "Sou um assistente especializado na *Copa do Mundo 2026* "
         "(Canada, EUA e Mexico). Uso inteligencia artificial com ferramentas "
         "de dados em tempo real.\n\n"
+        "*Importante:* eu entendo apenas *mensagens de texto*. "
+        "Imagens, audios, videos, stickers e arquivos nao sao processados.\n\n"
+        "*Dica para audios:* se preferir falar, transcreva antes de enviar. "
+        "No Telegram, mantenha pressionada a mensagem de voz e toque em "
+        "*Transcrever* (disponivel com Telegram Premium em alguns aparelhos). "
+        "Outra opcao: use o microfone do teclado do celular para ditar o texto "
+        "e envie a mensagem escrita.\n\n"
         "*O que faco:*\n"
         "- Datas, horarios e locais dos jogos (fuso de Brasilia)\n"
         "- Placares ao vivo e resultados\n"
@@ -266,6 +275,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "/jogos             proximos jogos\n"
         "/tabela            classificacao dos grupos\n"
         "/grupo A           classificacao de um grupo (A-L)\n"
+        "/elenco Brasil     elenco convocado de uma selecao\n"
+        "/escalacao Noruega titulares da ultima partida\n"
         "/aovivo            jogos ao vivo agora\n"
         "/artilheiros       tabela de artilheiros\n"
         "/matamata          fase eliminatoria\n"
@@ -368,6 +379,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/tabela         - classificacao dos grupos\n"
         "/aovivo         - jogos ao vivo agora\n"
         "/artilheiros    - artilheiros da Copa\n"
+        "/elenco         - elenco convocado\n"
+        "/escalacao      - titulares da ultima partida\n"
         "/matamata       - fase eliminatoria\n"
         "/alertas        - suas preferencias\n"
         "/preferencias   - adicionar time\n"
@@ -440,6 +453,34 @@ async def grupo_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     result = await asyncio.to_thread(classificacao, grupo)
     await _reply_with_nav(update, result)
     print(f"{Fore.CYAN}[/grupo {grupo}] chat_id={update.effective_chat.id}{Style.RESET_ALL}")
+
+
+async def elenco_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para /elenco [time] — elenco convocado de uma seleção."""
+    if not context.args:
+        await update.message.reply_text(
+            "Informe a seleção: /elenco Brasil, /elenco Argentina, /elenco Noruega..."
+        )
+        return
+    time_arg = " ".join(context.args).strip()
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    result = await asyncio.to_thread(elenco, time_arg)
+    await _reply_with_nav(update, result)
+    print(f"{Fore.CYAN}[/elenco {time_arg}] chat_id={update.effective_chat.id}{Style.RESET_ALL}")
+
+
+async def escalacao_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para /escalacao [time] — titulares da última partida da seleção."""
+    if not context.args:
+        await update.message.reply_text(
+            "Informe a seleção: /escalacao Brasil, /escalacao Noruega, /escalacao França..."
+        )
+        return
+    time_arg = " ".join(context.args).strip()
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    result = await asyncio.to_thread(escalacao, time_arg)
+    await _reply_with_nav(update, result, parse_mode="Markdown")
+    print(f"{Fore.CYAN}[/escalacao {time_arg}] chat_id={update.effective_chat.id}{Style.RESET_ALL}")
 
 
 async def alertas_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -771,6 +812,8 @@ def main() -> None:
     app.add_handler(CommandHandler("jogos", jogos_command))
     app.add_handler(CommandHandler("tabela", tabela_command))
     app.add_handler(CommandHandler("grupo", grupo_command))
+    app.add_handler(CommandHandler("elenco", elenco_command))
+    app.add_handler(CommandHandler("escalacao", escalacao_command))
     app.add_handler(CommandHandler("aovivo", aovivo_command))
     app.add_handler(CommandHandler("artilheiros", artilheiros_command))
     app.add_handler(CommandHandler("matamata", matamata_command))

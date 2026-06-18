@@ -304,9 +304,11 @@ TOOLS_CONFIG = types.Tool(
                         type=types.Type.STRING,
                         description=(
                             "O que você quer saber. Valores válidos:\n"
+                            "  'hoje'           — jogos de hoje na Copa\n"
                             "  'proximos_jogos' — próximos jogos agendados\n"
                             "  'resultado'      — placar de jogo recente\n"
-                            "  'escalacao'      — titulares e banco de uma partida\n"
+                            "  'escalacao'      — titulares e banco da última partida da seleção\n"
+                            "  'elenco'         — elenco convocado (26 jogadores)\n"
                             "  'classificacao'  — tabela da fase de grupos\n"
                             "  'ao_vivo'        — jogos acontecendo agora\n"
                             "  'artilheiros'    — tabela de artilheiros e assistências\n"

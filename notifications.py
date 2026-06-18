@@ -33,6 +33,8 @@ from tools.football import (
     _SEASON,
     _TTL,
     escalacao,
+    _fdorg_competition_matches,
+    _find_fdorg_team,
 )
 
 _HISTORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "history")
@@ -100,39 +102,97 @@ def _mark_sent(chat_id: int, fixture_id: int, alert_type: str) -> None:
 # BUSCA DE FIXTURES POR TIME (com cache)
 # ─────────────────────────────────────────────────────────────
 
-def _get_fixtures_for_team(team_api: str) -> list[dict]:
-    """Retorna fixtures das próximas 24h + últimas 3h para um time."""
-    tid = _resolve_team_id(team_api)
-    if not tid:
-        return []
+_FDORG_STATUS_MAP = {
+    "SCHEDULED": "NS",
+    "TIMED": "NS",
+    "IN_PLAY": "LIVE",
+    "PAUSED": "HT",
+    "FINISHED": "FT",
+    "AWARDED": "FT",
+    "POSTPONED": "PST",
+    "CANCELLED": "CANC",
+}
 
-    cache_key = f"notif_fixtures_{tid}"
+
+def _fdorg_match_to_fixture(m: dict) -> dict:
+    """Converte partida football-data.org para o formato API-Football usado no loop de alertas."""
+    fdorg_status = m.get("status", "")
+    api_status = _FDORG_STATUS_MAP.get(fdorg_status, "NS")
+    score = (m.get("score") or {}).get("fullTime", {})
+    return {
+        "fixture": {
+            "id": m.get("id", 0),
+            "date": m.get("utcDate", ""),
+            "status": {"short": api_status, "long": fdorg_status, "elapsed": None},
+            "venue": {"name": m.get("venue") or "", "city": ""},
+        },
+        "teams": {
+            "home": {"id": None, "name": m.get("homeTeam", {}).get("name", ""), "logo": ""},
+            "away": {"id": None, "name": m.get("awayTeam", {}).get("name", ""), "logo": ""},
+        },
+        "goals": {"home": score.get("home"), "away": score.get("away")},
+        "league": {
+            "id": _LEAGUE_ID,
+            "round": (m.get("group") or m.get("stage", "")).replace("GROUP_", "Grupo "),
+        },
+    }
+
+
+def _get_fixtures_for_team(team_api: str) -> list[dict]:
+    """Retorna fixtures relevantes para um time (próximas 48h + últimas 3h).
+
+    Tenta API-Football primeiro; usa football-data.org como fallback
+    quando API-Football está vazia (plano Free bloqueado para 2026).
+    """
+    tid = _resolve_team_id(team_api)
+    cache_key = f"notif_fixtures_{tid or team_api}"
     cached = _cache_get(cache_key, 300)
     if cached is not None:
         return cached
 
     results = []
 
-    data = _api_get("fixtures", {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-        "team": tid,
-        "next": 3,
-    })
-    if data and data.get("response"):
-        results.extend(data["response"])
+    if tid:
+        data = _api_get("fixtures", {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+            "team": tid,
+            "next": 3,
+        })
+        if data and data.get("response"):
+            results.extend(data["response"])
 
-    data_last = _api_get("fixtures", {
-        "league": _LEAGUE_ID,
-        "season": _SEASON,
-        "team": tid,
-        "last": 2,
-    })
-    if data_last and data_last.get("response"):
-        seen_ids = {f.get("fixture", {}).get("id") for f in results}
-        for f in data_last["response"]:
-            if f.get("fixture", {}).get("id") not in seen_ids:
-                results.append(f)
+        data_last = _api_get("fixtures", {
+            "league": _LEAGUE_ID,
+            "season": _SEASON,
+            "team": tid,
+            "last": 2,
+        })
+        if data_last and data_last.get("response"):
+            seen_ids = {f.get("fixture", {}).get("id") for f in results}
+            for f in data_last["response"]:
+                if f.get("fixture", {}).get("id") not in seen_ids:
+                    results.append(f)
+
+    # Fallback football-data.org quando API-Football retornou vazio
+    if not results:
+        fdorg_team = _find_fdorg_team(team_api)
+        if fdorg_team:
+            tname = fdorg_team.get("name", "")
+            all_matches = _fdorg_competition_matches()
+            if all_matches:
+                now = datetime.now(tz=timezone.utc)
+                window_start = (now - timedelta(hours=3)).isoformat()
+                window_end = (now + timedelta(hours=48)).isoformat()
+                for m in all_matches:
+                    home = m.get("homeTeam", {}).get("name", "")
+                    away = m.get("awayTeam", {}).get("name", "")
+                    if tname not in (home, away):
+                        continue
+                    status = m.get("status", "")
+                    md = m.get("utcDate", "")
+                    if status in ("IN_PLAY", "PAUSED") or (window_start <= md <= window_end):
+                        results.append(_fdorg_match_to_fixture(m))
 
     _cache_set(cache_key, results)
     return results

@@ -34,14 +34,23 @@ O Render define automaticamente `PORT`, `REDIS_URL` e `RENDER_EXTERNAL_URL`.
 
 ---
 
-## Horário programado (10h–03h BRT)
+## Horário programado (10h da manhã → 3h da madrugada, BRT)
 
-Workflows em `.github/workflows/` ligam/desligam só o **Web Service** via API do Render:
+O bot fica **ligado das 10:00 às 03:01 do dia seguinte** (horário de Brasília) — ou seja, **3 da manhã**, não 15h (3 da tarde).
 
-| Horário (Brasília) | Ação |
-|--------------------|------|
-| 10:00 | Liga (`render-resume.yml`) |
-| 03:01 | Desliga (`render-suspend.yml`) |
+```
+        OFF          ON (17 horas)                    OFF
+  |----------|==========================|----------|
+  03:01    09:59  10:00              03:00  03:01  09:59
+  (desliga)        (liga)            (ainda on) (desliga)
+```
+
+Workflows em `.github/workflows/`:
+
+| Horário (Brasília) | Ação | Cron (UTC) |
+|--------------------|------|------------|
+| **10:00** (manhã) | Liga | `0 13 * * *` |
+| **03:01** (madrugada) | Desliga | `1 6 * * *` |
 
 Economia: ~510 h/mês em vez de ~744 h (24/7).
 
@@ -52,9 +61,22 @@ Economia: ~510 h/mês em vez de ~744 h (24/7).
 3. No GitHub: **Settings → Secrets → Actions**
    - `RENDER_API_KEY`
    - `RENDER_SERVICE_ID`
-4. Push na `main` e teste: Actions → **Render — Ligar Robocopa** → Run workflow
+4. Push na `main` — a partir daí o horário roda **sozinho** (veja abaixo)
 
-O Redis **não** é suspenso. Entre 03:01 e 09:59 o bot fica offline.
+### Automático vs manual
+
+| Modo | Quando roda | Precisa fazer algo? |
+|------|-------------|---------------------|
+| **Automático** | Todo dia **10:00** liga · **03:01** desliga (BRT) | Não — o `cron` do GitHub Actions cuida disso |
+| **Manual** (Run workflow) | Quando **você** clicar em Actions → Run workflow | Só para **testar** ou ligar/desligar **fora** do horário |
+
+O passo “Testar agora” é **uma vez**, para confirmar que os secrets e a API do Render estão certos. Depois disso, ignore — o bot liga às 10h e desliga às 03:01 sem intervenção.
+
+**Exceção:** se você fizer deploy ou quiser usar o bot entre **03:01 e 09:59**, aí sim pode rodar **Render — Ligar Robocopa** manualmente (ou esperar até as 10h).
+
+> GitHub Actions em repositório **privado** consome minutos do plano free do GitHub; em repo **público** o agendamento costuma ser gratuito. O cron pode atrasar alguns minutos — é normal.
+
+O Redis **não** é suspenso. Entre 03:01 e 09:59 o bot fica offline (salvo se você ligar manualmente).
 
 ---
 
