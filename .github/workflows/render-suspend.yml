@@ -1,5 +1,5 @@
-# Desliga o Web Service robocopa no Render — 03:01 (horário de Brasília)
-# 03:01 BRT = 06:01 UTC
+# Desliga o Web Service robocopa no Render — 03:01 da madrugada (horário de Brasília)
+# 03:01 BRT = 06:01 UTC  (não confundir com 15:00 / 3 da tarde)
 name: Render — Desligar Robocopa
 
 on:
