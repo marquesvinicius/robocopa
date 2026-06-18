@@ -1,0 +1,40 @@
+services:
+  - type: web
+    name: robocopa
+    env: python
+    region: oregon
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    healthCheckPath: /health
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: TAVILY_API_KEY
+        sync: false
+      - key: API_FOOTBALL_KEY
+        sync: false
+      - key: FOOTBALL_DATA_KEY
+        sync: false
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: robocopa-redis
+          property: connectionString
+      - key: GEMINI_MODEL
+        value: gemini-2.5-flash-lite
+      - key: NOTIFICATION_CHECK_INTERVAL_MIN
+        value: "5"
+      - key: MAX_HISTORY
+        value: "10"
+      - key: DEBUG
+        value: "false"
+      - key: SEARCH_PROVIDER
+        value: tavily
+
+  - type: redis
+    name: robocopa-redis
+    plan: free
+    ipAllowList: []
