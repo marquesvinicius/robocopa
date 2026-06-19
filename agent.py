@@ -306,7 +306,7 @@ TOOLS_CONFIG = types.Tool(
                             "O que você quer saber. Valores válidos:\n"
                             "  'hoje'           — jogos de hoje na Copa\n"
                             "  'proximos_jogos' — próximos jogos agendados\n"
-                            "  'resultado'      — placar de jogo recente\n"
+                            "  'resultado'      — placar de jogo recente (time=nome OU data DD/MM/YYYY)\n"
                             "  'escalacao'      — titulares e banco da última partida da seleção\n"
                             "  'elenco'         — elenco convocado (26 jogadores)\n"
                             "  'classificacao'  — tabela da fase de grupos\n"
@@ -319,8 +319,8 @@ TOOLS_CONFIG = types.Tool(
                     "time": types.Schema(
                         type=types.Type.STRING,
                         description=(
-                            "Nome da seleção (PT-BR aceito). "
-                            "Exemplos: 'Brasil', 'Argentina', 'França', 'Alemanha'. "
+                            "Nome da seleção (PT-BR aceito) OU data no formato DD/MM/YYYY. "
+                            "Exemplos: 'Brasil', 'Argentina', '18/06/2026' (todos os jogos do dia). "
                             "Para H2H: 'Brasil x Argentina'. "
                             "Deixe vazio para dados gerais (todos os jogos/grupos)."
                         )

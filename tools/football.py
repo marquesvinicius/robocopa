@@ -616,7 +616,9 @@ def _openfootball_resultado(time_ou_data: str) -> str:
 
     if not results:
         return ""
-    return "\n".join(results[-3:]) + "\n" + _fallback_source_note()
+    # Por data: todos os jogos do dia; por time: até os 3 mais recentes
+    shown = results if date_filter else results[-3:]
+    return "\n".join(shown) + "\n" + _fallback_source_note()
 
 
 def _openfootball_classificacao(grupo: str | None) -> str:
@@ -1034,7 +1036,8 @@ def resultado_jogo(time_ou_data: str) -> str:
         ]
         if fixtures:
             lines = []
-            for f in fixtures[:3]:
+            limit = len(fixtures) if date_param else 3
+            for f in fixtures[:limit]:
                 home = _team_pt(f.get("teams", {}).get("home", {}).get("name", "?"))
                 away = _team_pt(f.get("teams", {}).get("away", {}).get("name", "?"))
                 goals_h = f.get("goals", {}).get("home", 0)
@@ -1888,7 +1891,7 @@ def dados_copa(intencao: str, time: str = "", grupo: str = "") -> str:
             "artilheiros"     — tabela de artilheiros e assistências
             "mata_mata"       — fase eliminatória (oitavas, quartas, semi, final)
             "h2h"             — retrospecto entre dois times (use time="Brasil x Argentina")
-        time: Nome da seleção (PT-BR aceito), ou "Time1 x Time2" para h2h.
+        time: Nome da seleção (PT-BR aceito), data DD/MM/YYYY, ou "Time1 x Time2" para h2h.
         grupo: Letra do grupo ("A"–"L"). Usado com intenção "classificacao".
 
     Returns:

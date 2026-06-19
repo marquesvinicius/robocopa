@@ -20,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 
 from storage import get_redis
 from preferences import UserPreferences
+from telegram_format import send_message_markdown
 from tools.football import (
     _api_get,
     _cache_get,
@@ -302,7 +303,7 @@ async def check_and_send_alerts(bot, preferences: UserPreferences) -> None:
                         if not _was_sent(chat_id, fid, "pre_match"):
                             try:
                                 msg = _format_pre_match(fixture, team_raw)
-                                await bot.send_message(chat_id=chat_id, text=msg)
+                                await send_message_markdown(bot, chat_id, msg)
                                 _mark_sent(chat_id, fid, "pre_match")
                             except Exception:
                                 pass
@@ -317,7 +318,7 @@ async def check_and_send_alerts(bot, preferences: UserPreferences) -> None:
                                 if ("ainda não disponível" not in lineup_text
                                         and "Não encontrei" not in lineup_text):
                                     msg = _format_lineup(fixture, lineup_text)
-                                    await bot.send_message(chat_id=chat_id, text=msg)
+                                    await send_message_markdown(bot, chat_id, msg)
                                     _mark_sent(chat_id, fid, "lineup")
                             except Exception:
                                 pass
@@ -327,7 +328,7 @@ async def check_and_send_alerts(bot, preferences: UserPreferences) -> None:
                     if not _was_sent(chat_id, fid, "result"):
                         try:
                             msg = _format_result(fixture)
-                            await bot.send_message(chat_id=chat_id, text=msg)
+                            await send_message_markdown(bot, chat_id, msg)
                             _mark_sent(chat_id, fid, "result")
                         except Exception:
                             pass
@@ -352,7 +353,7 @@ async def check_and_send_alerts(bot, preferences: UserPreferences) -> None:
                             if not _was_sent(chat_id, fid, dedup_key):
                                 try:
                                     msg = _format_goal(fixture, gh, ga, scorer_side)
-                                    await bot.send_message(chat_id=chat_id, text=msg)
+                                    await send_message_markdown(bot, chat_id, msg)
                                     _mark_sent(chat_id, fid, dedup_key)
                                 except Exception:
                                     pass

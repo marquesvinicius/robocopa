@@ -235,6 +235,6 @@ class UserPreferences:
             "*Suas preferencias no Robocopa:*\n\n"
             f"Times seguidos: *{teams_str}*\n\n"
             f"Alertas ativos:\n  - {alerts_str}\n\n"
-            f"_Preferencias salvas em: {backend}_\n"
-            "_Use /cancelar\\_alertas para remover tudo._"
+            f"Preferencias salvas em: {backend}.\n"
+            "Use /cancelar_alertas para remover tudo."
         )

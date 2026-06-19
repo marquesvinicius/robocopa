@@ -45,6 +45,7 @@ from colorama import init, Fore, Style
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.error import Conflict
+from telegram_format import prepare_telegram_markdown, reply_text_markdown, send_message_markdown
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -196,39 +197,43 @@ def _nav_keyboard() -> InlineKeyboardMarkup:
 
 async def _send_long(update: Update, text: str) -> None:
     """Envia resposta dividindo em chunks se ultrapassar 4096 chars."""
-    if len(text) <= 4096:
-        await update.message.reply_text(text)
+    prepared = prepare_telegram_markdown(text)
+    if len(prepared) <= 4096:
+        await reply_text_markdown(update.message, text)
     else:
-        for i in range(0, len(text), 4096):
-            await update.message.reply_text(text[i:i + 4096])
-            if i + 4096 < len(text):
+        for i in range(0, len(prepared), 4096):
+            chunk = prepared[i:i + 4096]
+            await reply_text_markdown(update.message, chunk)
+            if i + 4096 < len(prepared):
                 await asyncio.sleep(0.3)
 
 
-async def _reply_with_nav(update: Update, text: str, parse_mode: str | None = None) -> None:
+async def _reply_with_nav(update: Update, text: str) -> None:
     """Envia resposta com botões de navegação na última mensagem."""
     keyboard = _nav_keyboard()
-    if len(text) <= 4096:
-        await update.message.reply_text(text, reply_markup=keyboard, parse_mode=parse_mode)
+    prepared = prepare_telegram_markdown(text)
+    if len(prepared) <= 4096:
+        await reply_text_markdown(update.message, text, reply_markup=keyboard)
     else:
-        chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
+        chunks = [prepared[i:i + 4096] for i in range(0, len(prepared), 4096)]
         for chunk in chunks[:-1]:
-            await update.message.reply_text(chunk, parse_mode=parse_mode)
+            await reply_text_markdown(update.message, chunk)
             await asyncio.sleep(0.3)
-        await update.message.reply_text(chunks[-1], reply_markup=keyboard, parse_mode=parse_mode)
+        await reply_text_markdown(update.message, chunks[-1], reply_markup=keyboard)
 
 
 async def _send_nav(bot, chat_id: int, text: str) -> None:
     """Envia mensagem com botões de navegação (usado em callbacks)."""
     keyboard = _nav_keyboard()
-    if len(text) <= 4096:
-        await bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+    prepared = prepare_telegram_markdown(text)
+    if len(prepared) <= 4096:
+        await send_message_markdown(bot, chat_id, text, reply_markup=keyboard)
     else:
-        chunks = [text[i:i + 4096] for i in range(0, len(text), 4096)]
+        chunks = [prepared[i:i + 4096] for i in range(0, len(prepared), 4096)]
         for chunk in chunks[:-1]:
-            await bot.send_message(chat_id=chat_id, text=chunk)
+            await send_message_markdown(bot, chat_id, chunk)
             await asyncio.sleep(0.3)
-        await bot.send_message(chat_id=chat_id, text=chunks[-1], reply_markup=keyboard)
+        await send_message_markdown(bot, chat_id, chunks[-1], reply_markup=keyboard)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -479,7 +484,7 @@ async def escalacao_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     time_arg = " ".join(context.args).strip()
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     result = await asyncio.to_thread(escalacao, time_arg)
-    await _reply_with_nav(update, result, parse_mode="Markdown")
+    await _reply_with_nav(update, result)
     print(f"{Fore.CYAN}[/escalacao {time_arg}] chat_id={update.effective_chat.id}{Style.RESET_ALL}")
 
 
@@ -488,7 +493,7 @@ async def alertas_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     chat_id = update.effective_chat.id
     summary = preferences.format_summary(chat_id)
     tip = (
-        "\n\nPara seguir um time, diga: _\"Me avise quando o Brasil jogar\"_\n"
+        '\n\nPara seguir um time, diga: "Me avise quando o Brasil jogar".\n'
         "Ou use /preferencias Brasil"
     )
     await update.message.reply_text(summary + tip, parse_mode="Markdown")
@@ -509,7 +514,7 @@ async def preferencias_command(update: Update, context: ContextTypes.DEFAULT_TYP
         summary = preferences.format_summary(chat_id)
         tip = (
             "\n\n*Dica:* use /preferencias Brasil para adicionar um time.\n"
-            "Ou diga ao bot: _\"Quero alertas do Brasil\"_"
+            'Ou diga ao bot: "Quero alertas do Brasil"'
         )
         await update.message.reply_text(summary + tip, parse_mode="Markdown")
         return
@@ -545,8 +550,9 @@ async def cancelar_alertas_command(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(
         "Todas as suas preferencias e alertas foram removidos.\n"
         "Voce nao recebera mais notificacoes automaticas.\n\n"
-        "Para reativar, use /preferencias ou diga _\"Me avise quando o Brasil jogar\"_.",
-        parse_mode="Markdown"
+        "Para reativar, use /preferencias ou diga "
+        '"Me avise quando o Brasil jogar".',
+        parse_mode="Markdown",
     )
     print(f"{Fore.CYAN}[/cancelar_alertas] chat_id={chat_id}{Style.RESET_ALL}")
 
