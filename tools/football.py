@@ -22,7 +22,8 @@ A Copa do Mundo 2026 na API-Football:
 import json
 import os
 import time
-from datetime import datetime, timedelta, timezone
+import atexit
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -49,11 +50,13 @@ _CACHE_FILE = os.path.join(
 # TTL em segundos para cada tipo de dado cacheado
 _TTL: dict[str, int] = {
     "fixtures":    300,   # 5 min — jogos próximos mudam pouco
-    "live":        60,    # 1 min — placar ao vivo
+    "live":        60,    # 1 min — placar ao vivo / jogos iminentes
     "standings":   600,   # 10 min — classificação
     "lineups":     300,   # 5 min — escalação
     "openfootball": 3600, # 1 hora — JSON estático
 }
+_FC_REDIS_PREFIX = "robocopa:fc:"
+_DISK_FLUSH_SEC = 2.0
 _OPENFOOTBALL_URL = (
     "https://raw.githubusercontent.com/openfootball/"
     "worldcup.json/master/2026/worldcup.json"
@@ -91,6 +94,7 @@ _ALIASES: dict[str, str] = {
     "holanda":   "Netherlands",
     "netherlands":"Netherlands",
     "estados unidos": "USA",
+    "united states": "USA",
     "eua":       "USA",
     "usa":       "USA",
     "mexico":    "Mexico",
@@ -270,10 +274,17 @@ def _team_pt(name: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────
-# CACHE
+# CACHE — L1 memória + Redis (opcional) + disco com flush debounced
 # ─────────────────────────────────────────────────────────────
 
-def _load_cache() -> dict:
+_mem_store: dict | None = None
+_mem_dirty = False
+_last_disk_flush = 0.0
+_openfootball_kickoffs: list[tuple[datetime, dict]] | None = None
+_openfootball_kickoffs_src_id: int | None = None
+
+
+def _disk_load() -> dict:
     try:
         with open(_CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -281,29 +292,123 @@ def _load_cache() -> dict:
         return {}
 
 
-def _save_cache(cache: dict) -> None:
+def _disk_save(cache: dict) -> None:
     os.makedirs(os.path.dirname(_CACHE_FILE), exist_ok=True)
     try:
         with open(_CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+            json.dump(cache, f, ensure_ascii=False)
     except OSError:
-        pass  # falha de escrita não deve quebrar o bot
+        pass
+
+
+def _mem_ensure() -> dict:
+    global _mem_store
+    if _mem_store is None:
+        _mem_store = _disk_load()
+    return _mem_store
+
+
+def _mem_flush(force: bool = False) -> None:
+    global _mem_dirty, _last_disk_flush
+    if not _mem_dirty:
+        return
+    now = time.time()
+    if not force and now - _last_disk_flush < _DISK_FLUSH_SEC:
+        return
+    _disk_save(_mem_ensure())
+    _mem_dirty = False
+    _last_disk_flush = now
+
+
+def _redis_fc_get(key: str) -> dict | None:
+    try:
+        from storage import get_redis
+        r = get_redis()
+        if not r:
+            return None
+        raw = r.get(f"{_FC_REDIS_PREFIX}{key}")
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
+def _redis_fc_set(key: str, entry: dict, ttl: int) -> None:
+    try:
+        from storage import get_redis
+        r = get_redis()
+        if not r:
+            return
+        r.setex(
+            f"{_FC_REDIS_PREFIX}{key}",
+            max(ttl, 60),
+            json.dumps(entry, ensure_ascii=False),
+        )
+    except Exception:
+        pass
 
 
 def _cache_get(key: str, ttl: int) -> Any | None:
-    cache = _load_cache()
-    entry = cache.get(key)
+    store = _mem_ensure()
+    entry = store.get(key)
+    if not entry:
+        entry = _redis_fc_get(key)
+        if entry:
+            store[key] = entry
     if not entry:
         return None
-    if time.time() - entry.get("ts", 0) > ttl:
+    effective_ttl = entry.get("ttl", ttl)
+    if time.time() - entry.get("ts", 0) > effective_ttl:
         return None
     return entry.get("data")
 
 
-def _cache_set(key: str, data: Any) -> None:
-    cache = _load_cache()
-    cache[key] = {"ts": time.time(), "data": data}
-    _save_cache(cache)
+def _cache_set(key: str, data: Any, ttl: int | None = None) -> None:
+    global _mem_dirty
+    store = _mem_ensure()
+    effective_ttl = ttl if ttl is not None else _TTL["fixtures"]
+    entry = {"ts": time.time(), "data": data, "ttl": effective_ttl}
+    store[key] = entry
+    _mem_dirty = True
+    _redis_fc_set(key, entry, effective_ttl)
+    _mem_flush()
+
+
+atexit.register(lambda: _mem_flush(force=True))
+
+
+def _invalidate_openfootball_index() -> None:
+    global _openfootball_kickoffs, _openfootball_kickoffs_src_id
+    _openfootball_kickoffs = None
+    _openfootball_kickoffs_src_id = None
+
+
+def _openfootball_kickoff_list() -> list[tuple[datetime, dict]]:
+    """Lista (kickoff BRT, match) — construída uma vez por carga do JSON."""
+    global _openfootball_kickoffs, _openfootball_kickoffs_src_id
+    data = _load_openfootball()
+    if not data:
+        return []
+    src_id = id(data)
+    if _openfootball_kickoffs is not None and _openfootball_kickoffs_src_id == src_id:
+        return _openfootball_kickoffs
+    kickoffs: list[tuple[datetime, dict]] = []
+    for match in data.get("matches", []):
+        kickoff = _kickoff_brt_openfootball(match)
+        if kickoff:
+            kickoffs.append((kickoff, match))
+    _openfootball_kickoffs = kickoffs
+    _openfootball_kickoffs_src_id = src_id
+    return kickoffs
+
+
+def _hoje_cache_ttl(items: list[tuple[datetime, str]]) -> int:
+    """TTL curto quando há jogo ao vivo ou nas próximas 2 horas."""
+    now = datetime.now(tz=_BR_TZ)
+    for kickoff, _ in items:
+        delta = (kickoff - now).total_seconds()
+        if -7200 <= delta <= 7200:
+            return _TTL["live"]
+    return _TTL["fixtures"]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -340,16 +445,145 @@ def _fdorg_match_on_date(m: dict, date_yyyy_mm_dd: str) -> bool:
 
 
 def _openfootball_finished_count(date_yyyy_mm_dd: str) -> int:
-    """Quantidade de jogos encerrados no openfootball para uma data."""
-    data = _load_openfootball()
-    if not data:
+    """Quantidade de jogos encerrados no openfootball para uma data (BRT)."""
+    if not _load_openfootball():
         return 0
+    target = date.fromisoformat(date_yyyy_mm_dd)
     return sum(
         1
-        for match in data.get("matches", [])
-        if match.get("date") == date_yyyy_mm_dd
-        and match.get("score", {}).get("ft")
+        for kickoff, match in _openfootball_kickoff_list()
+        if kickoff.date() == target and match.get("score", {}).get("ft")
     )
+
+
+def _kickoff_brt_fdorg(m: dict) -> datetime | None:
+    utc_date = m.get("utcDate", "")
+    if not utc_date:
+        return None
+    try:
+        return datetime.fromisoformat(utc_date.replace("Z", "+00:00")).astimezone(_BR_TZ)
+    except Exception:
+        return None
+
+
+def _kickoff_brt_openfootball(match: dict) -> datetime | None:
+    dt = _parse_openfootball_dt(match.get("date", ""), match.get("time", ""))
+    if dt is None:
+        return None
+    return dt.astimezone(_BR_TZ)
+
+
+def _is_jogo_de_hoje(kickoff_brt: datetime | None, today_br: date) -> bool:
+    """Jogo de hoje em BRT, ou de ontem à noite (≥20h) que termina após meia-noite."""
+    if not kickoff_brt:
+        return False
+    k_date = kickoff_brt.date()
+    if k_date == today_br:
+        return True
+    yesterday = today_br - timedelta(days=1)
+    return k_date == yesterday and kickoff_brt.hour >= 20
+
+
+def _match_hoje_key(home: str, away: str, kickoff_brt: datetime) -> str:
+    h = _normalize_team(home).lower()
+    a = _normalize_team(away).lower()
+    return f"{h}|{a}|{kickoff_brt.strftime('%Y-%m-%dT%H:%M')}"
+
+
+def _match_teams_key(home: str, away: str) -> str:
+    teams = sorted([_normalize_team(home).lower(), _normalize_team(away).lower()])
+    return f"{teams[0]}|{teams[1]}"
+
+
+def _format_artilheiro_line(
+    pos: int, name: str, team: str, goals: int, assists: int, *, cards: str = ""
+) -> str:
+    extra = f" | {cards}" if cards else ""
+    return f"{pos}. *{name}* ({team}) — {goals} gol(s), {assists} assist.{extra}"
+
+
+def _format_classificacao_line(
+    pos, name: str, j: int, v: int, e: int, d: int, gp: int, gc: int, pts: int
+) -> str:
+    return f"{pos}. *{name}* — {pts} pts | {j}J {v}V {e}E {d}D | {gp}-{gc}"
+
+
+def _openfootball_hoje_line(match: dict, kickoff: datetime) -> str:
+    t1 = match.get("team1", {})
+    t2 = match.get("team2", {})
+    n1 = _team_pt(t1.get("name", str(t1)) if isinstance(t1, dict) else str(t1))
+    n2 = _team_pt(t2.get("name", str(t2)) if isinstance(t2, dict) else str(t2))
+    date = kickoff.strftime("%d/%m/%Y %H:%M (Brasília)")
+    grp = match.get("group", match.get("round", ""))
+    score = match.get("score", {})
+    ft = score.get("ft")
+    if ft and len(ft) >= 2:
+        return (
+            f"• *{n1} {ft[0]} x {ft[1]} {n2}* (Encerrado)\n"
+            f"  Data: {date}\n  Fase: {grp}"
+        )
+    return f"• {n1} x {n2}\n  Data: {date}\n  Fase: {grp}"
+
+
+def _collect_jogos_hoje_lines(today_br: date) -> list[tuple[datetime, str]]:
+    """Coleta jogos de hoje (BRT) de todas as fontes, sem duplicar."""
+    collected: dict[str, tuple[datetime, str]] = {}
+
+    def add(home: str, away: str, kickoff: datetime | None, line: str) -> None:
+        if not kickoff:
+            return
+        key = _match_teams_key(home, away)
+        if key not in collected:
+            collected[key] = (kickoff, line)
+
+    if _has_fdorg_key():
+        for m in _fdorg_competition_matches() or []:
+            kickoff = _kickoff_brt_fdorg(m)
+            if not _is_jogo_de_hoje(kickoff, today_br):
+                continue
+            home = m.get("homeTeam", {}).get("name", "?")
+            away = m.get("awayTeam", {}).get("name", "?")
+            add(home, away, kickoff, _fdorg_match_line(m, detailed=True))
+
+    of_data = _load_openfootball()
+    if of_data:
+        for kickoff, match in _openfootball_kickoff_list():
+            if not _is_jogo_de_hoje(kickoff, today_br):
+                continue
+            t1 = match.get("team1", {})
+            t2 = match.get("team2", {})
+            home = t1.get("name", str(t1)) if isinstance(t1, dict) else str(t1)
+            away = t2.get("name", str(t2)) if isinstance(t2, dict) else str(t2)
+            if _match_teams_key(home, away) in collected:
+                continue
+            add(home, away, kickoff, _openfootball_hoje_line(match, kickoff))
+
+    if not collected and not _api_football_2026_blocked:
+        today_str = today_br.isoformat()
+        yesterday_str = (today_br - timedelta(days=1)).isoformat()
+        for date_q in (today_str, yesterday_str):
+            data = _api_get("fixtures", {"date": date_q})
+            if not data or not data.get("response"):
+                continue
+            for f in data["response"]:
+                if f.get("league", {}).get("id") != _LEAGUE_ID:
+                    continue
+                raw = f.get("fixture", {}).get("date", "")
+                try:
+                    kickoff = datetime.fromisoformat(
+                        raw.replace("Z", "+00:00")
+                    ).astimezone(_BR_TZ)
+                except Exception:
+                    continue
+                if not _is_jogo_de_hoje(kickoff, today_br):
+                    continue
+                home = f.get("teams", {}).get("home", {}).get("name", "?")
+                away = f.get("teams", {}).get("away", {}).get("name", "?")
+                lines = _format_fixture_lines([f], detailed=True)
+                if lines:
+                    add(home, away, kickoff, lines[0])
+
+    return sorted(collected.values(), key=lambda x: x[0])
 
 
 def _api_headers() -> dict:
@@ -516,7 +750,8 @@ def _load_openfootball() -> dict | None:
         resp = requests.get(_OPENFOOTBALL_URL, timeout=_REQUEST_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
-        _cache_set("openfootball", data)
+        _cache_set("openfootball", data, ttl=_TTL["openfootball"])
+        _invalidate_openfootball_index()
         return data
     except Exception:
         return None
@@ -593,9 +828,7 @@ def _openfootball_resultado(time_ou_data: str) -> str:
     Busca placar de partidas encerradas no openfootball.
     Retorna texto formatado ou string vazia se não encontrado.
     """
-    import re as _re
-    data = _load_openfootball()
-    if not data:
+    if not _load_openfootball():
         return ""
 
     team_api = None
@@ -604,26 +837,32 @@ def _openfootball_resultado(time_ou_data: str) -> str:
         parsed = datetime.strptime(time_ou_data.strip(), "%d/%m/%Y")
         date_filter = parsed.strftime("%Y-%m-%d")
     except ValueError:
-        # Pode ser "Brasil x Marrocos" ou só "Brasil"
         raw = time_ou_data.strip()
         partes = [p.strip() for p in raw.replace(" x ", "x").replace(" X ", "x").split("x")]
         team_api = _normalize_team(partes[0]) if partes else _normalize_team(raw)
 
+    target_date = date.fromisoformat(date_filter) if date_filter else None
+    candidates = _openfootball_kickoff_list() if date_filter else [
+        (k, m)
+        for m in (_load_openfootball() or {}).get("matches", [])
+        for k in [_kickoff_brt_openfootball(m)]
+        if k
+    ]
+
     results = []
-    for match in data.get("matches", []):
+    for kickoff, match in candidates:
         score = match.get("score", {})
         ft = score.get("ft")
         if not ft or len(ft) < 2:
-            continue  # jogo ainda não encerrado
+            continue
 
         t1_raw = match.get("team1", {})
         t2_raw = match.get("team2", {})
         n1 = t1_raw.get("name", str(t1_raw)) if isinstance(t1_raw, dict) else str(t1_raw)
         n2 = t2_raw.get("name", str(t2_raw)) if isinstance(t2_raw, dict) else str(t2_raw)
-        match_date = match.get("date", "")
 
         if date_filter:
-            if match_date != date_filter:
+            if kickoff.date() != target_date:
                 continue
         elif team_api:
             if (
@@ -632,18 +871,13 @@ def _openfootball_resultado(time_ou_data: str) -> str:
             ):
                 continue
 
-        dt_utc = _parse_openfootball_dt(match_date, match.get("time", ""))
-        if dt_utc:
-            date_br = dt_utc.astimezone(_BR_TZ).strftime("%d/%m/%Y %H:%M (Brasília)")
-        else:
-            date_br = match_date
+        date_br = kickoff.strftime("%d/%m/%Y %H:%M (Brasília)")
         grp = match.get("group", match.get("round", ""))
         g1, g2 = ft[0], ft[1]
         results.append(f"**{_team_pt(n1)} {g1} x {g2} {_team_pt(n2)}** — {date_br} | {grp}")
 
     if not results:
         return ""
-    # Por data: todos os jogos do dia; por time: até os 3 mais recentes
     shown = results if date_filter else results[-3:]
     return "\n".join(shown) + "\n" + _fallback_source_note()
 
@@ -733,7 +967,7 @@ def _fdorg_competition_teams() -> list[dict] | None:
         return None
 
     teams = data["teams"]
-    _cache_set(_FDORG_CACHE_TEAMS, teams)
+    _cache_set(_FDORG_CACHE_TEAMS, teams, ttl=_FDORG_TEAMS_TTL)
     return teams
 
 
@@ -748,7 +982,7 @@ def _fdorg_competition_matches() -> list[dict] | None:
         return None
 
     matches = data["matches"]
-    _cache_set(_FDORG_CACHE_MATCHES, matches)
+    _cache_set(_FDORG_CACHE_MATCHES, matches, ttl=_FDORG_MATCHES_TTL)
     return matches
 
 
@@ -842,7 +1076,7 @@ def _fdorg_ao_vivo() -> list[dict]:
     all_matches = _fdorg_competition_matches()
     if all_matches is not None:
         result = [m for m in all_matches if m.get("status") in ("IN_PLAY", "PAUSED")]
-        _cache_set("fdorg_live", result)
+        _cache_set("fdorg_live", result, ttl=_TTL["live"])
         return result
 
     # Fallback direto só se o cache compartilhado não retornou nada
@@ -851,7 +1085,7 @@ def _fdorg_ao_vivo() -> list[dict]:
         data = _fdorg_get(f"competitions/{_FDORG_COMP}/matches", {"status": status})
         if data and "matches" in data:
             result.extend(data["matches"])
-    _cache_set("fdorg_live", result)
+    _cache_set("fdorg_live", result, ttl=_TTL["live"])
     return result
 
 
@@ -875,13 +1109,9 @@ def _fdorg_classificacao(grupo: str | None) -> str:
             continue
 
         lines.append(f"\n**{grp_name}**")
-        lines.append(
-            f"{'#':<3} {'Seleção':<20} {'J':>3} {'V':>3} {'E':>3} {'D':>3} {'GP':>4} {'GC':>4} {'Pts':>4}"
-        )
-        lines.append("-" * 52)
         for team in standing.get("table", []):
             pos = team.get("position", "?")
-            name = _team_pt(team.get("team", {}).get("name", "?"))[:18]
+            name = _team_pt(team.get("team", {}).get("name", "?"))
             j = team.get("playedGames", 0)
             v = team.get("won", 0)
             e = team.get("draw", 0)
@@ -889,15 +1119,13 @@ def _fdorg_classificacao(grupo: str | None) -> str:
             gp = team.get("goalsFor", 0)
             gc = team.get("goalsAgainst", 0)
             pts = team.get("points", 0)
-            lines.append(
-                f"{pos:<3} {name:<20} {j:>3} {v:>3} {e:>3} {d:>3} {gp:>4} {gc:>4} {pts:>4}"
-            )
+            lines.append(_format_classificacao_line(pos, name, j, v, e, d, gp, gc, pts))
 
     if len(lines) <= 1:
         return ""
 
     result = "\n".join(lines) + "\n_(fonte: football-data.org)_"
-    _cache_set(cache_key, result)
+    _cache_set(cache_key, result, ttl=_TTL["standings"])
     return result
 
 
@@ -916,17 +1144,15 @@ def _fdorg_artilheiros(limite: int) -> str:
         return ""
 
     lines = ["**Artilheiros — Copa do Mundo 2026**\n"]
-    lines.append(f"{'#':<4} {'Jogador':<22} {'Seleção':<14} {'G':>4} {'A':>4}")
-    lines.append("-" * 50)
     for i, entry in enumerate(scorers[:limite], 1):
-        player = entry.get("player", {}).get("name", "?")[:20]
-        team = _team_pt(entry.get("team", {}).get("name", "?"))[:12]
+        player = entry.get("player", {}).get("name", "?")
+        team = _team_pt(entry.get("team", {}).get("name", "?"))
         goals = entry.get("goals", 0) or 0
         assists = entry.get("assists", 0) or 0
-        lines.append(f"{i:<4} {player:<22} {team:<14} {goals:>4} {assists:>4}")
+        lines.append(_format_artilheiro_line(i, player, team, goals, assists))
 
-    result = "\n".join(lines) + "\n_(G=Gols, A=Assistencias | fonte: football-data.org)_"
-    _cache_set(cache_key, result)
+    result = "\n".join(lines) + "\n_(fonte: football-data.org)_"
+    _cache_set(cache_key, result, ttl=1800)
     return result
 
 
@@ -1389,11 +1615,9 @@ def classificacao(grupo: str | None = None) -> str:
             if grupo and grupo.upper() not in grp_name.upper():
                 continue
             lines.append(f"\n**{grp_name}**")
-            lines.append(f"{'#':<3} {'Seleção':<20} {'J':>3} {'V':>3} {'E':>3} {'D':>3} {'GP':>4} {'GC':>4} {'Pts':>4}")
-            lines.append("-" * 52)
             for team in group_standings:
                 pos = team.get("rank", "?")
-                name = _team_pt(team.get("team", {}).get("name", "?"))[:18]
+                name = _team_pt(team.get("team", {}).get("name", "?"))
                 all_s = team.get("all", {})
                 j = all_s.get("played", 0)
                 v = all_s.get("win", 0)
@@ -1402,26 +1626,26 @@ def classificacao(grupo: str | None = None) -> str:
                 gp = all_s.get("goals", {}).get("for", 0)
                 gc = all_s.get("goals", {}).get("against", 0)
                 pts = team.get("points", 0)
-                lines.append(f"{pos:<3} {name:<20} {j:>3} {v:>3} {e:>3} {d:>3} {gp:>4} {gc:>4} {pts:>4}")
+                lines.append(_format_classificacao_line(pos, name, j, v, e, d, gp, gc, pts))
 
         if not lines:
             return f"Grupo {grupo} não encontrado." if grupo else "Nenhuma classificação disponível."
 
         result = "**Classificação — Copa do Mundo 2026**\n" + "\n".join(lines)
-        _cache_set(cache_key, result)
+        _cache_set(cache_key, result, ttl=_TTL["standings"])
         return result
 
     # 2ª fonte: football-data.org (classificação completa com pontuação)
     if _has_fdorg_key():
         fdorg_stand = _fdorg_classificacao(grupo)
         if fdorg_stand:
-            _cache_set(cache_key, fdorg_stand)
+            _cache_set(cache_key, fdorg_stand, ttl=_TTL["standings"])
             return fdorg_stand
 
     # Fallback: openfootball (lista de times por grupo, sem pontuação)
     result = _openfootball_classificacao(grupo)
     if result:
-        _cache_set(cache_key, result)
+        _cache_set(cache_key, result, ttl=_TTL["standings"])
         return result
 
     return (
@@ -1544,28 +1768,27 @@ def artilheiros(limite: int = 10) -> str:
             return "Artilharia ainda não disponível (nenhum gol marcado)."
 
         lines = ["**Artilheiros — Copa do Mundo 2026**\n"]
-        lines.append(f"{'#':<4} {'Jogador':<22} {'Seleção':<14} {'G':>4} {'A':>4} {'CA':>4} {'CV':>4}")
-        lines.append("-" * 58)
         for i, entry in enumerate(players, 1):
             player = entry.get("player", {})
             stats = entry.get("statistics", [{}])[0]
-            name = player.get("name", "?")[:20]
-            team = _team_pt(stats.get("team", {}).get("name", "?"))[:12]
+            name = player.get("name", "?")
+            team = _team_pt(stats.get("team", {}).get("name", "?"))
             goals = stats.get("goals", {}).get("total", 0) or 0
             assists = stats.get("goals", {}).get("assists", 0) or 0
             yellow = stats.get("cards", {}).get("yellow", 0) or 0
             red = stats.get("cards", {}).get("red", 0) or 0
-            lines.append(f"{i:<4} {name:<22} {team:<14} {goals:>4} {assists:>4} {yellow:>4} {red:>4}")
+            cards = f"{yellow}A {red}V" if yellow or red else ""
+            lines.append(_format_artilheiro_line(i, name, team, goals, assists, cards=cards))
 
-        result = "\n".join(lines) + "\n_(G=Gols, A=Assistencias, CA=Amarelo, CV=Vermelho)_"
-        _cache_set(cache_key, result)
+        result = "\n".join(lines) + "\n_(fonte: API-Football)_"
+        _cache_set(cache_key, result, ttl=1800)
         return result
 
     # 2ª fonte: football-data.org (artilheiros da Copa)
     if _has_fdorg_key():
         fdorg_result = _fdorg_artilheiros(limite)
         if fdorg_result:
-            _cache_set(cache_key, fdorg_result)
+            _cache_set(cache_key, fdorg_result, ttl=1800)
             return fdorg_result
 
     return (
@@ -1835,78 +2058,50 @@ def _resolve_team_id(team_name: str) -> int | None:
 def jogos_hoje() -> str:
     """
     Retorna todos os jogos da Copa 2026 programados para hoje (horário de Brasília).
-    Inclui resultado se o jogo já encerrou, ou horário se ainda não começou.
+    Inclui jogos de ontem à noite (≥20h) que terminam após meia-noite.
     """
     today_br = datetime.now(tz=_BR_TZ).date()
     today_str = today_br.isoformat()
     cache_key = f"today_{today_str}"
 
-    cached = _cache_get(cache_key, 300)
+    cached = _cache_get(cache_key, _TTL["fixtures"])
     if cached:
         return cached
 
     header = f"Jogos de hoje — {today_br.strftime('%d/%m/%Y')}:\n\n"
+    items = _collect_jogos_hoje_lines(today_br)
 
-    # API-Football — consulta por data (funciona no free tier)
-    data = _api_get("fixtures", {"date": today_str})
-    if data and data.get("response"):
-        copa_fixtures = [
-            f for f in data["response"]
-            if f.get("league", {}).get("id") == _LEAGUE_ID
-        ]
-        if copa_fixtures:
-            result = header + "\n\n".join(_format_fixture_lines(copa_fixtures, detailed=True))
-            _cache_set(cache_key, result)
-            return result
+    if not items:
         result = f"Nenhum jogo da Copa 2026 hoje ({today_br.strftime('%d/%m/%Y')})."
-        _cache_set(cache_key, result)
-        return result
+        ttl = _TTL["fixtures"]
+    else:
+        lines = [line for _, line in items]
+        source = (
+            "_(fonte: football-data.org)_"
+            if _has_fdorg_key()
+            else _fallback_source_note().strip()
+        )
+        result = header + "\n\n".join(lines) + "\n" + source
+        ttl = _hoje_cache_ttl(items)
 
-    # football-data.org — filtra do cache compartilhado (evita req extra)
-    if _has_fdorg_key():
-        all_matches = _fdorg_competition_matches()
-        if all_matches:
-            today_matches = [
-                m for m in all_matches
-                if m.get("utcDate", "").startswith(today_str)
-                or datetime.fromisoformat(
-                    m.get("utcDate", "1970-01-01T00:00:00+00:00")
-                ).astimezone(_BR_TZ).date().isoformat() == today_str
-            ]
-            if today_matches:
-                lines = [_fdorg_match_line(m, detailed=True) for m in today_matches]
-                result = header + "\n\n".join(lines) + "\n_(fonte: football-data.org)_"
-                _cache_set(cache_key, result)
-                return result
-
-    # openfootball — filtra por data exata
-    of_data = _load_openfootball()
-    if of_data:
-        lines = []
-        for match in of_data.get("matches", []):
-            if match.get("date", "") != today_str:
-                continue
-            t1 = match.get("team1", {})
-            t2 = match.get("team2", {})
-            n1 = _team_pt(t1.get("name", str(t1)) if isinstance(t1, dict) else str(t1))
-            n2 = _team_pt(t2.get("name", str(t2)) if isinstance(t2, dict) else str(t2))
-            grp = match.get("group", match.get("round", ""))
-            score = match.get("score", {})
-            ft = score.get("ft")
-            dt_utc = _parse_openfootball_dt(match.get("date", ""), match.get("time", ""))
-            if ft and len(ft) >= 2:
-                lines.append(f"• **{n1} {ft[0]} x {ft[1]} {n2}** (Encerrado) | {grp}")
-            elif dt_utc:
-                hora = dt_utc.astimezone(_BR_TZ).strftime("%H:%M")
-                lines.append(f"• {n1} x {n2} — {hora} (Brasília) | {grp}")
-        if lines:
-            result = header + "\n".join(lines) + "\n" + _fallback_source_note()
-            _cache_set(cache_key, result)
-            return result
-
-    result = f"Nenhum jogo da Copa 2026 hoje ({today_br.strftime('%d/%m/%Y')})."
-    _cache_set(cache_key, result)
+    _cache_set(cache_key, result, ttl=ttl)
     return result
+
+
+def warmup_football_cache() -> str:
+    """
+    Pré-carrega fontes estruturadas no boot (thread em background).
+    Evita latência na primeira consulta de /hoje, /tabela ou /artilheiros.
+    """
+    parts: list[str] = []
+    if _has_fdorg_key():
+        matches = _fdorg_competition_matches()
+        parts.append(f"fdorg={len(matches or [])}")
+    if _load_openfootball():
+        parts.append(f"openfootball={len(_openfootball_kickoff_list())}")
+    jogos_hoje()
+    parts.append("hoje=ok")
+    return " | ".join(parts)
 
 
 # ─────────────────────────────────────────────────────────────

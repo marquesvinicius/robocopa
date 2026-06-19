@@ -70,6 +70,7 @@ from tools.football import (
     elenco,
     escalacao,
     api_football_startup_status,
+    warmup_football_cache,
 )
 
 # ─────────────────────────────────────────────────────────────
@@ -824,6 +825,15 @@ def main() -> None:
         sys.exit(1)
 
     acquire_single_instance_lock()
+
+    def _warmup_football() -> None:
+        try:
+            info = warmup_football_cache()
+            print(f"  {Fore.CYAN}Cache futebol:  {info}{Style.RESET_ALL}")
+        except Exception as exc:
+            print(f"  {Fore.YELLOW}Cache futebol:  warmup falhou ({exc}){Style.RESET_ALL}")
+
+    threading.Thread(target=_warmup_football, daemon=True, name="football-warmup").start()
 
     token = os.getenv("TELEGRAM_TOKEN")
 
