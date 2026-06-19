@@ -325,6 +325,33 @@ def _utc_to_brasilia(iso_str: str) -> str:
         return iso_str
 
 
+def _fdorg_match_on_date(m: dict, date_yyyy_mm_dd: str) -> bool:
+    """True se a partida cai no dia informado em Brasília (não só em UTC)."""
+    utc_date = m.get("utcDate", "")
+    if utc_date.startswith(date_yyyy_mm_dd):
+        return True
+    try:
+        local = datetime.fromisoformat(
+            utc_date.replace("Z", "+00:00")
+        ).astimezone(_BR_TZ).date().isoformat()
+        return local == date_yyyy_mm_dd
+    except Exception:
+        return False
+
+
+def _openfootball_finished_count(date_yyyy_mm_dd: str) -> int:
+    """Quantidade de jogos encerrados no openfootball para uma data."""
+    data = _load_openfootball()
+    if not data:
+        return 0
+    return sum(
+        1
+        for match in data.get("matches", [])
+        if match.get("date") == date_yyyy_mm_dd
+        and match.get("score", {}).get("ft")
+    )
+
+
 def _api_headers() -> dict:
     key = os.getenv("API_FOOTBALL_KEY", "").strip()
     return {
@@ -607,7 +634,7 @@ def _openfootball_resultado(time_ou_data: str) -> str:
 
         dt_utc = _parse_openfootball_dt(match_date, match.get("time", ""))
         if dt_utc:
-            date_br = dt_utc.astimezone(_BR_TZ).strftime("%d/%m/%Y (Brasilia)")
+            date_br = dt_utc.astimezone(_BR_TZ).strftime("%d/%m/%Y %H:%M (Brasília)")
         else:
             date_br = match_date
         grp = match.get("group", match.get("round", ""))
@@ -791,7 +818,7 @@ def _fdorg_resultado(team_name: str | None, date_filter: str | None) -> list[dic
 
     matches = [m for m in all_matches if m.get("status") in ("FINISHED", "AWARDED")]
     if date_filter:
-        matches = [m for m in matches if m.get("utcDate", "").startswith(date_filter)]
+        matches = [m for m in matches if _fdorg_match_on_date(m, date_filter)]
     if team_name:
         t = team_name.lower()
         matches = [
@@ -799,7 +826,10 @@ def _fdorg_resultado(team_name: str | None, date_filter: str | None) -> list[dic
             if t in m.get("homeTeam", {}).get("name", "").lower()
             or t in m.get("awayTeam", {}).get("name", "").lower()
         ]
-    result = matches[-5:]
+    if date_filter:
+        result = sorted(matches, key=lambda m: m.get("utcDate", ""))
+    else:
+        result = matches[-5:]
     _cache_set(cache_key, result)
     return result
 
@@ -1045,11 +1075,10 @@ def resultado_jogo(time_ou_data: str) -> str:
                 date = _utc_to_brasilia(f.get("fixture", {}).get("date", ""))
                 fid = f.get("fixture", {}).get("id")
                 events_str = _get_events(fid)
-                lines.append(
-                    f"**{home} {goals_h} x {goals_a} {away}**\n"
-                    f"Data: {date}\n"
-                    f"{events_str}"
-                )
+                line = f"**{home} {goals_h} x {goals_a} {away}**\nData: {date}"
+                if events_str:
+                    line += f"\n{events_str}"
+                lines.append(line)
             result = "\n\n---\n\n".join(lines)
             _cache_set(cache_key, result)
             return result
@@ -1058,7 +1087,15 @@ def resultado_jogo(time_ou_data: str) -> str:
     if _has_fdorg_key():
         fdorg_matches = _fdorg_resultado(team_api, date_param)
         if fdorg_matches:
-            lines = [_fdorg_match_line(m) for m in reversed(fdorg_matches[-3:])]
+            if date_param and _openfootball_finished_count(date_param) > len(fdorg_matches):
+                openfb_result = _openfootball_resultado(time_ou_data)
+                if openfb_result:
+                    _cache_set(cache_key, openfb_result)
+                    return openfb_result
+            if date_param:
+                lines = [_fdorg_match_line(m) for m in fdorg_matches]
+            else:
+                lines = [_fdorg_match_line(m) for m in reversed(fdorg_matches[-3:])]
             result = "\n".join(lines) + "\n_(fonte: football-data.org)_"
             _cache_set(cache_key, result)
             return result

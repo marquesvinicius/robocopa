@@ -81,7 +81,8 @@ REGRA para escalação titular:
 - Não confunda elenco (26 convocados) com escalação titular de uma partida específica.
 
 ## Horário
-Sempre informe horários no fuso de Brasília (BRT = UTC-3). A ferramenta dados_copa já converte.
+Se a ferramenta trouxer horário, pode incluí-lo na resposta (dados_copa já converte para Brasília).
+Não invente horários. Evite frases genéricas sobre fuso (ex.: "todos os horários são de Brasília") se o usuário não perguntou sobre isso.
 
 ## Memória
 Lembre o contexto da conversa: se o usuário mencionou um time antes, use-o como padrão.
