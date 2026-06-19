@@ -30,7 +30,8 @@ O Render define automaticamente `PORT`, `REDIS_URL` e `RENDER_EXTERNAL_URL`.
 - **750 h/mês** de instância web por workspace
 - Spin down após 15 min sem tráfego (o bot usa keep-alive interno a cada 14 min **enquanto ligado**)
 - Redis free: 25 MB, **sem persistência** — preferências podem zerar em restart
-- Não rode o bot no PC e no Render ao mesmo tempo (conflito de token no Telegram)
+- Não rode o bot no PC e no Render ao mesmo tempo (conflito de token no Telegram — log `[CONFLITO TELEGRAM]`)
+- Durante **deploy** no Render, esse conflito pode aparecer por ~1 min (instância antiga ainda encerrando); some sozinho se não houver `main.py` local
 
 ---
 

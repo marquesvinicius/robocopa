@@ -102,6 +102,23 @@ preferences = UserPreferences()
 
 # Impede duas instâncias do bot (causa Conflict + respostas duplicadas no Telegram)
 _LOCK_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".bot.lock")
+_CONFLICT_LOG_INTERVAL_SEC = 60.0
+_last_conflict_log_at = 0.0
+
+
+def _is_render_runtime() -> bool:
+    """True quando o processo roda no Render (não no PC local)."""
+    return bool(os.getenv("RENDER", "").strip() or os.getenv("RENDER_EXTERNAL_URL", "").strip())
+
+
+def _local_stop_hint() -> str:
+    if sys.platform == "win32":
+        return (
+            "  Get-CimInstance Win32_Process -Filter \"name='python.exe'\" "
+            "| Where-Object { $_.CommandLine -match 'main\\.py' } "
+            "| ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+        )
+    return "  pkill -f 'python.*main.py'   # ou feche o outro terminal com Ctrl+C"
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -116,7 +133,10 @@ def _pid_is_running(pid: int) -> bool:
 
 
 def acquire_single_instance_lock() -> None:
-    """Garante que apenas um main.py use o token do Telegram por vez."""
+    """Garante que apenas um main.py use o token do Telegram por vez (só em dev local)."""
+    if _is_render_runtime():
+        return
+
     if os.path.exists(_LOCK_FILE):
         try:
             with open(_LOCK_FILE, encoding="utf-8") as f:
@@ -128,9 +148,7 @@ def acquire_single_instance_lock() -> None:
                 )
                 print(
                     f"{Fore.WHITE}Encerre o outro terminal (Ctrl+C) ou execute:{Style.RESET_ALL}\n"
-                    f"  Get-CimInstance Win32_Process -Filter \"name='python.exe'\" "
-                    f"| Where-Object {{ $_.CommandLine -match 'main\\.py' }} "
-                    f"| ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}\n"
+                    f"  {_local_stop_hint()}\n"
                 )
                 sys.exit(1)
         except (ValueError, OSError):
@@ -661,17 +679,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Trata erros do polling sem stack trace repetitivo no terminal."""
+    global _last_conflict_log_at
     err = context.error
     if isinstance(err, Conflict):
-        print(
-            f"\n{Fore.RED}[CONFLITO TELEGRAM] Duas instancias do bot estao rodando.{Style.RESET_ALL}"
-        )
-        print(
-            f"{Fore.YELLOW}Encerre todas:{Style.RESET_ALL}\n"
-            f"  Get-CimInstance Win32_Process -Filter \"name='python.exe'\" "
-            f"| Where-Object {{ $_.CommandLine -match 'main\\.py' }} "
-            f"| ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}\n"
-        )
+        now = time.time()
+        if now - _last_conflict_log_at < _CONFLICT_LOG_INTERVAL_SEC:
+            return
+        _last_conflict_log_at = now
+
+        print(f"\n{Fore.RED}[CONFLITO TELEGRAM] Duas instancias do bot estao rodando.{Style.RESET_ALL}")
+        if _is_render_runtime():
+            print(
+                f"{Fore.YELLOW}No Render isso costuma ser:{Style.RESET_ALL}\n"
+                "  1. Overlap de deploy (instancia antiga ainda encerrando) — normal por ~1 min\n"
+                "  2. main.py rodando no seu PC com o MESMO TELEGRAM_TOKEN\n\n"
+                "Confira se nao ha python main.py local. O comando PowerShell abaixo "
+                "so vale no Windows do seu PC, nao no servidor Render."
+            )
+        else:
+            print(f"{Fore.YELLOW}Encerre todas as copias locais:{Style.RESET_ALL}\n  {_local_stop_hint()}\n")
     else:
         print(f"\n{Fore.RED}[TELEGRAM] {type(err).__name__}: {err}{Style.RESET_ALL}\n")
 
@@ -862,9 +888,12 @@ def main() -> None:
         )
 
     print(f"{Fore.GREEN}[BOT INICIADO] Aguardando mensagens no Telegram...{Style.RESET_ALL}")
-    print(f"{Fore.WHITE}Pressione Ctrl+C para encerrar.\n{Style.RESET_ALL}")
+    if not _is_render_runtime():
+        print(f"{Fore.WHITE}Pressione Ctrl+C para encerrar.\n{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.WHITE}Render: encerramento via SIGTERM no deploy.\n{Style.RESET_ALL}")
 
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
