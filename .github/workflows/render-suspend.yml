@@ -1,10 +1,11 @@
-# Desliga o Web Service robocopa no Render — 03:01 da madrugada (horário de Brasília)
-# 03:01 BRT = 06:01 UTC  (não confundir com 15:00 / 3 da tarde)
+# Desliga o Web Service robocopa no Render — 03:05 da madrugada (horário de Brasília)
+# :05 evita pico de fila no início da hora (recomendação do GitHub Actions)
 name: Render — Desligar Robocopa
 
 on:
   schedule:
-    - cron: "1 6 * * *"
+    - cron: "5 3 * * *"
+      timezone: "America/Sao_Paulo"
   workflow_dispatch:
 
 concurrency:
@@ -25,7 +26,7 @@ jobs:
 
       - name: Suspend serviço robocopa
         run: |
-          echo "Desligando serviço ${{ secrets.RENDER_SERVICE_ID }} (03:01 BRT)..."
+          echo "Desligando serviço ${{ secrets.RENDER_SERVICE_ID }} (03:05 America/Sao_Paulo)..."
           http_code=$(curl -sS -o /tmp/render-suspend.json -w "%{http_code}" -X POST \
             "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/suspend" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \

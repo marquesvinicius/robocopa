@@ -36,21 +36,23 @@ O Render define automaticamente `PORT`, `REDIS_URL` e `RENDER_EXTERNAL_URL`.
 
 ## Horário programado (10h da manhã → 3h da madrugada, BRT)
 
-O bot fica **ligado das 10:00 às 03:01 do dia seguinte** (horário de Brasília) — ou seja, **3 da manhã**, não 15h (3 da tarde).
+O bot fica **ligado das 10:05 às 03:05 do dia seguinte** (horário de Brasília) — ou seja, **3 da manhã**, não 15h (3 da tarde).
 
 ```
-        OFF          ON (17 horas)                    OFF
+        OFF          ON (~17 horas)                   OFF
   |----------|==========================|----------|
-  03:01    09:59  10:00              03:00  03:01  09:59
+  03:05    09:59  10:05              03:00  03:05  09:59
   (desliga)        (liga)            (ainda on) (desliga)
 ```
 
-Workflows em `.github/workflows/`:
+Workflows em `.github/workflows/` (evento `schedule` + `workflow_dispatch` manual):
 
-| Horário (Brasília) | Ação | Cron (UTC) |
-|--------------------|------|------------|
-| **10:00** (manhã) | Liga | `0 13 * * *` |
-| **03:01** (madrugada) | Desliga | `1 6 * * *` |
+| Horário (Brasília) | Ação | Cron |
+|--------------------|------|------|
+| **10:05** (manhã) | Liga | `5 10 * * *` + `timezone: America/Sao_Paulo` |
+| **03:05** (madrugada) | Desliga | `5 3 * * *` + `timezone: America/Sao_Paulo` |
+
+O cron usa **fuso de Brasília** direto no YAML (sem converter para UTC na mão). Os minutos `:05` evitam pico de fila no início da hora — recomendação do GitHub Actions.
 
 Economia: ~510 h/mês em vez de ~744 h (24/7).
 
@@ -61,22 +63,22 @@ Economia: ~510 h/mês em vez de ~744 h (24/7).
 3. No GitHub: **Settings → Secrets → Actions**
    - `RENDER_API_KEY`
    - `RENDER_SERVICE_ID`
-4. Push na `main` — a partir daí o horário roda **sozinho** (veja abaixo)
+4. Push na `master` — a partir daí o horário roda **sozinho** (veja abaixo)
 
 ### Automático vs manual
 
 | Modo | Quando roda | Precisa fazer algo? |
 |------|-------------|---------------------|
-| **Automático** | Todo dia **10:00** liga · **03:01** desliga (BRT) | Não — o `cron` do GitHub Actions cuida disso |
-| **Manual** (Run workflow) | Quando **você** clicar em Actions → Run workflow | Só para **testar** ou ligar/desligar **fora** do horário |
+| **Automático** | Todo dia **10:05** liga · **03:05** desliga (BRT) | Não — o `schedule` do GitHub Actions cuida disso |
+| **Manual** (`workflow_dispatch`) | Quando **você** clicar em Actions → Run workflow | Só para **testar** ou ligar/desligar **fora** do horário |
 
 O passo “Testar agora” é **uma vez**, para confirmar que os secrets e a API do Render estão certos. O workflow **Ligar** agora também espera até `https://robocopa.onrender.com/health` responder `Robocopa OK` (até ~5 min de cold start no free tier) — o run só fica verde quando o bot estiver de fato no ar.
 
-**Exceção:** se você fizer deploy ou quiser usar o bot entre **03:01 e 09:59**, aí sim pode rodar **Render — Ligar Robocopa** manualmente (ou esperar até as 10h).
+**Exceção:** se você fizer deploy ou quiser usar o bot entre **03:05 e 10:04**, aí sim pode rodar **Render — Ligar Robocopa** manualmente (ou esperar até as 10h).
 
-> GitHub Actions em repositório **privado** consome minutos do plano free do GitHub; em repo **público** o agendamento costuma ser gratuito. O cron pode atrasar alguns minutos — é normal.
+> GitHub Actions em repositório **privado** consome minutos do plano free do GitHub; em repo **público** o agendamento costuma ser gratuito. O `schedule` pode atrasar alguns minutos em horários de pico — é normal (não é falha do Render).
 
-O Redis **não** é suspenso. Entre 03:01 e 09:59 o bot fica offline (salvo se você ligar manualmente).
+O Redis **não** é suspenso. Entre 03:05 e 10:04 o bot fica offline (salvo se você ligar manualmente).
 
 ---
 
@@ -84,7 +86,7 @@ O Redis **não** é suspenso. Entre 03:01 e 09:59 o bot fica offline (salvo se v
 
 - Plano free: monitor HTTP a cada 5 min
 - URL: `https://robocopa.onrender.com/health`
-- Configure **janela de manutenção** 03:01–09:59 BRT para não receber alertas quando o desligamento for intencional
+- Configure **janela de manutenção** 03:05–10:04 BRT para não receber alertas quando o desligamento for intencional
 - Não substitui o agendamento — só avisa se cair fora do horário
 
 ---
