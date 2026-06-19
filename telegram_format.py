@@ -13,6 +13,7 @@ _MARKDOWN_BOLD = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _MARKDOWN_ITALIC = re.compile(r"__(.+?)__", re.DOTALL)
 _BULLET_ITALIC = re.compile(r"^(\s*)\*\s+\*([^*\n]+)\*", re.MULTILINE)
 _BULLET_PLAIN = re.compile(r"^(\s*)\*\s+(?!\*)", re.MULTILINE)
+_SLASH_COMMAND = re.compile(r"/[\w_]+")
 
 _STRIP_BOLD_DBL = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
 _STRIP_BOLD = re.compile(r"\*(.+?)\*", re.DOTALL)
@@ -20,6 +21,15 @@ _STRIP_ITALIC_DBL = re.compile(r"__(.+?)__", re.DOTALL)
 _STRIP_ITALIC = re.compile(r"_(.+?)_", re.DOTALL)
 _STRIP_CODE = re.compile(r"`([^`]+)`")
 _STRIP_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+
+
+def _escape_slash_command_underscores(text: str) -> str:
+    """Escapa _ em /comandos_com_underline (Markdown legado do Telegram)."""
+
+    def _escape(match: re.Match[str]) -> str:
+        return match.group(0).replace("_", r"\_")
+
+    return _SLASH_COMMAND.sub(_escape, text)
 
 
 def prepare_telegram_markdown(text: str) -> str:
@@ -31,6 +41,7 @@ def prepare_telegram_markdown(text: str) -> str:
     text = _MARKDOWN_ITALIC.sub(r"_\1_", text)
     text = _BULLET_ITALIC.sub(r"\1• *\2*", text)
     text = _BULLET_PLAIN.sub(r"\1• ", text)
+    text = _escape_slash_command_underscores(text)
     return text
 
 

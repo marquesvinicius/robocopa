@@ -514,7 +514,7 @@ async def alertas_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         '\n\nPara seguir um time, diga: "Me avise quando o Brasil jogar".\n'
         "Ou use /preferencias Brasil"
     )
-    await update.message.reply_text(summary + tip, parse_mode="Markdown")
+    await reply_text_markdown(update.message, summary + tip)
     print(f"{Fore.CYAN}[/alertas] chat_id={chat_id}{Style.RESET_ALL}")
 
 
@@ -534,7 +534,7 @@ async def preferencias_command(update: Update, context: ContextTypes.DEFAULT_TYP
             "\n\n*Dica:* use /preferencias Brasil para adicionar um time.\n"
             'Ou diga ao bot: "Quero alertas do Brasil"'
         )
-        await update.message.reply_text(summary + tip, parse_mode="Markdown")
+        await reply_text_markdown(update.message, summary + tip)
         return
 
     # Adiciona times passados como argumento
@@ -554,7 +554,7 @@ async def preferencias_command(update: Update, context: ContextTypes.DEFAULT_TYP
     msgs.append("\nVoce recebera alertas automaticos antes dos jogos desses times.")
     msgs.append("Use /alertas para ver e configurar seus alertas.")
 
-    await update.message.reply_text("\n".join(msgs), parse_mode="Markdown")
+    await reply_text_markdown(update.message, "\n".join(msgs))
     print(
         f"{Fore.CYAN}[/preferencias] chat_id={chat_id} — "
         f"adicionados={added}{Style.RESET_ALL}"
@@ -565,12 +565,12 @@ async def cancelar_alertas_command(update: Update, context: ContextTypes.DEFAULT
     """Handler para /cancelar_alertas — remove todas as preferências do usuário."""
     chat_id = update.effective_chat.id
     preferences.clear(chat_id)
-    await update.message.reply_text(
+    await reply_text_markdown(
+        update.message,
         "Todas as suas preferencias e alertas foram removidos.\n"
         "Voce nao recebera mais notificacoes automaticas.\n\n"
         "Para reativar, use /preferencias ou diga "
         '"Me avise quando o Brasil jogar".',
-        parse_mode="Markdown",
     )
     print(f"{Fore.CYAN}[/cancelar_alertas] chat_id={chat_id}{Style.RESET_ALL}")
 
