@@ -1,8 +1,21 @@
 # Robocopa — Assistente da Copa do Mundo 2026
 
+<p align="center">
+  <img src="images/robocopa_perfil.png" alt="RobôCopa — Seu assistente inteligente da Copa do Mundo 2026" width="320" />
+</p>
+
 Bot Telegram especializado na **Copa do Mundo 2026** (Canadá, EUA e México). Usa um agente ReAct com **Google Gemini** e ferramentas de dados em tempo real (futebol, busca web, alertas).
 
 Trabalho da disciplina **Tópicos em Engenharia de Software** (UNIRV).
+
+| | |
+|---|---|
+| **Repositório** | [github.com/marquesvinicius/robocopa](https://github.com/marquesvinicius/robocopa) |
+| **Bot no Telegram** | [@RobocopaBot](https://web.telegram.org/k/#@RobocopaBot) |
+
+<p align="center">
+  <img src="images/qr-code.png" alt="QR Code para abrir o RobocopaBot no Telegram" width="220" />
+</p>
 
 ---
 
