@@ -35,51 +35,67 @@ O Render define automaticamente `PORT`, `REDIS_URL` e `RENDER_EXTERNAL_URL`.
 
 ---
 
-## Horário programado (10h da manhã → 3h da madrugada, BRT)
+## Modo 24/7 (ativo agora)
 
-O bot fica **ligado das 10:05 às 03:05 do dia seguinte** (horário de Brasília) — ou seja, **3 da manhã**, não 15h (3 da tarde).
+Os agendamentos automáticos **10:05 liga / 03:05 desliga** estão **desativados**. O bot deve ficar ligado continuamente no Render (cabe no free tier: 750 h/mês ≈ 24/7 com margem).
 
+### Ligar o bot agora (se estiver suspenso)
+
+Escolha **uma** opção:
+
+1. **GitHub Actions (recomendado)**  
+   Repositório → **Actions** → **Render — Ligar Robocopa** → **Run workflow** → Run.  
+   Aguarde o job ficar verde (ele testa `https://robocopa.onrender.com/health`).
+
+2. **Painel Render**  
+   [dashboard.render.com](https://dashboard.render.com/) → serviço **robocopa** → se aparecer **Resume** / **Retomar**, clique.  
+   Ou **Manual Deploy** → **Deploy latest commit** (também sobe uma instância nova).
+
+3. **API Render** (se tiver a chave):
+   ```bash
+   curl -X POST "https://api.render.com/v1/services/SEU_SERVICE_ID/resume" \
+     -H "Authorization: Bearer SUA_RENDER_API_KEY"
+   ```
+
+Confirme: `https://robocopa.onrender.com/health` → `Robocopa OK` e no Telegram o bot responde.
+
+### Manter ligado até quinta (ou além)
+
+- **Não rode** o workflow **Render — Desligar Robocopa** (só existe disparo manual).
+- Com o `schedule` removido, **nada desliga sozinho** às 3h nem espera até 10h para ligar.
+- O keep-alive interno (14 min) evita spin-down por inatividade **enquanto o serviço estiver ativo**.
+- Após quinta, para voltar ao horário econômico, reative os blocos `schedule` nos YAML em `.github/workflows/`.
+
+### Workflows manuais (secrets necessários)
+
+| Workflow | Uso |
+|----------|-----|
+| **Render — Ligar Robocopa** | Resume após suspend ou deploy |
+| **Render — Desligar Robocopa** | Suspend voluntário (economizar horas) |
+
+Secrets no GitHub: `RENDER_API_KEY`, `RENDER_SERVICE_ID` ([como obter](#secrets-render-para-actions)).
+
+### Horário programado (desativado)
+
+Antes o bot ligava às **10:05** e desligava às **03:05** (BRT) via `schedule` no GitHub Actions. Isso foi desligado porque o agendamento não estava confiável (atrasos do Actions, secrets, ou serviço já suspenso).
+
+Para **reativar** no futuro, restaure em `.github/workflows/render-resume.yml` e `render-suspend.yml`:
+
+```yaml
+on:
+  schedule:
+    - cron: "5 10 * * *"   # ou "5 3 * * *" no suspend
+      timezone: "America/Sao_Paulo"
+  workflow_dispatch:
 ```
-        OFF          ON (~17 horas)                   OFF
-  |----------|==========================|----------|
-  03:05    09:59  10:05              03:00  03:05  09:59
-  (desliga)        (liga)            (ainda on) (desliga)
-```
 
-Workflows em `.github/workflows/` (evento `schedule` + `workflow_dispatch` manual):
+Economia com horário: ~510 h/mês vs ~744 h em 24/7.
 
-| Horário (Brasília) | Ação | Cron |
-|--------------------|------|------|
-| **10:05** (manhã) | Liga | `5 10 * * *` + `timezone: America/Sao_Paulo` |
-| **03:05** (madrugada) | Desliga | `5 3 * * *` + `timezone: America/Sao_Paulo` |
-
-O cron usa **fuso de Brasília** direto no YAML (sem converter para UTC na mão). Os minutos `:05` evitam pico de fila no início da hora — recomendação do GitHub Actions.
-
-Economia: ~510 h/mês em vez de ~744 h (24/7).
-
-### Configurar GitHub Actions
+### Secrets Render para Actions
 
 1. [Render → API Keys](https://dashboard.render.com/u/settings#api-keys) → criar chave
 2. Copiar o **Service ID** do web `robocopa` (`srv-...` na URL do dashboard)
-3. No GitHub: **Settings → Secrets → Actions**
-   - `RENDER_API_KEY`
-   - `RENDER_SERVICE_ID`
-4. Push na `master` — a partir daí o horário roda **sozinho** (veja abaixo)
-
-### Automático vs manual
-
-| Modo | Quando roda | Precisa fazer algo? |
-|------|-------------|---------------------|
-| **Automático** | Todo dia **10:05** liga · **03:05** desliga (BRT) | Não — o `schedule` do GitHub Actions cuida disso |
-| **Manual** (`workflow_dispatch`) | Quando **você** clicar em Actions → Run workflow | Só para **testar** ou ligar/desligar **fora** do horário |
-
-O passo “Testar agora” é **uma vez**, para confirmar que os secrets e a API do Render estão certos. O workflow **Ligar** agora também espera até `https://robocopa.onrender.com/health` responder `Robocopa OK` (até ~5 min de cold start no free tier) — o run só fica verde quando o bot estiver de fato no ar.
-
-**Exceção:** se você fizer deploy ou quiser usar o bot entre **03:05 e 10:04**, aí sim pode rodar **Render — Ligar Robocopa** manualmente (ou esperar até as 10h).
-
-> GitHub Actions em repositório **privado** consome minutos do plano free do GitHub; em repo **público** o agendamento costuma ser gratuito. O `schedule` pode atrasar alguns minutos em horários de pico — é normal (não é falha do Render).
-
-O Redis **não** é suspenso. Entre 03:05 e 10:04 o bot fica offline (salvo se você ligar manualmente).
+3. No GitHub: **Settings → Secrets → Actions** → `RENDER_API_KEY`, `RENDER_SERVICE_ID`
 
 ---
 
@@ -87,8 +103,8 @@ O Redis **não** é suspenso. Entre 03:05 e 10:04 o bot fica offline (salvo se v
 
 - Plano free: monitor HTTP a cada 5 min
 - URL: `https://robocopa.onrender.com/health`
-- Configure **janela de manutenção** 03:05–10:04 BRT para não receber alertas quando o desligamento for intencional
-- Não substitui o agendamento — só avisa se cair fora do horário
+- Em modo 24/7, alerta se `/health` falhar por mais de alguns minutos
+- Se reativar o horário programado, use janela de manutenção 03:05–10:04 BRT
 
 ---
 

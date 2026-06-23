@@ -1,11 +1,8 @@
-# Desliga o Web Service robocopa no Render — 03:05 da madrugada (horário de Brasília)
-# :05 evita pico de fila no início da hora (recomendação do GitHub Actions)
+# Desliga o Web Service robocopa no Render (manual).
+# Agendamento 03:05 BRT desativado — bot em modo 24/7 (ver docs/DEPLOY.md).
 name: Render — Desligar Robocopa
 
 on:
-  schedule:
-    - cron: "5 3 * * *"
-      timezone: "America/Sao_Paulo"
   workflow_dispatch:
 
 concurrency:

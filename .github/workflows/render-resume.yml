@@ -1,11 +1,8 @@
-# Liga o Web Service robocopa no Render — 10:05 (horário de Brasília)
-# :05 evita pico de fila no início da hora (recomendação do GitHub Actions)
+# Liga o Web Service robocopa no Render (manual).
+# Agendamento 10:05 BRT desativado — bot em modo 24/7 (ver docs/DEPLOY.md).
 name: Render — Ligar Robocopa
 
 on:
-  schedule:
-    - cron: "5 10 * * *"
-      timezone: "America/Sao_Paulo"
   workflow_dispatch:
 
 concurrency:
